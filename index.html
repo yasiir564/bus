@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pacific Coach - Bus Booking & Parcel Service</title>
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <!-- SweetAlert2 -->
+    <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
+    <!-- Lord Icons -->
+    <script src="https://cdn.lordicon.com/lordicon.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        :root {
+            --primary-blue: #0066cc;
+            --secondary-blue: #1e90ff;
+            --white: #ffffff;
+            --black: #333333;
+        }
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f4f4f4;
+            color: var(--black);
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            background-color: var(--primary-blue);
+            color: var(--white);
+            text-align: center;
+            padding: 20px 0;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            position: relative;
+        }
+        .contact-info {
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            color: var(--white);
+            font-size: 0.9em;
+        }
+        .booking-section, .parcel-services, .benefits-section, .faq-section {
+            background-color: var(--white);
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 30px;
+            margin-top: 20px;
+            transition: all 0.3s ease;
+        }
+        .benefits-section .benefits-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        .benefit-card {
+            text-align: center;
+            padding: 20px;
+            border-radius: 10px;
+            background-color: #f9f9f9;
+            transition: transform 0.3s ease;
+        }
+        .benefit-card:hover {
+            transform: scale(1.05);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        input, select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .btn {
+            display: inline-block;
+            background-color: var(--primary-blue);
+            color: var(--white);
+            padding: 12px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            margin: 10px 0;
+        }
+        .btn:hover {
+            background-color: var(--secondary-blue);
+        }
+        .faq-item {
+            margin-bottom: 15px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 15px;
+        }
+        .faq-question {
+            cursor: pointer;
+            font-weight: bold;
+            color: var(--primary-blue);
+        }
+        .faq-answer {
+            display: none;
+            margin-top: 10px;
+        }
+        @media (max-width: 768px) {
+            .contact-info {
+                position: static;
+                text-align: center;
+                margin-top: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Pacific Coach</h1>
+            <p>Connecting Garissa and Nairobi</p>
+            <div class="contact-info">
+                <i class="fas fa-phone"></i> Support: +254 123 456 789
+                <i class="fas fa-envelope ml-3"></i> support@pacificcoach.com
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <section class="booking-section">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/uetdxbjx.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Bus Booking
+            </h2>
+            <form id="bookingForm">
+                <div class="form-group">
+                    <label for="from">From:</label>
+                    <select id="from" required>
+                        <option value="">Select Origin</option>
+                        <option value="Garissa">Garissa</option>
+                        <option value="Nairobi">Nairobi</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="to">To:</label>
+                    <select id="to" required>
+                        <option value="">Select Destination</option>
+                        <option value="Nairobi">Nairobi</option>
+                        <option value="Garissa">Garissa</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="date">Travel Date:</label>
+                    <input type="date" id="date" required>
+                </div>
+                <div class="form-group">
+                    <label for="passengers">Number of Passengers:</label>
+                    <input type="number" id="passengers" min="1" max="10" required>
+                </div>
+                <button type="submit" class="btn">Book Now</button>
+            </form>
+        </section>
+
+        <section class="benefits-section">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/qvhryztb.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Benefits of Choosing Pacific Coach
+            </h2>
+            <div class="benefits-grid">
+                <div class="benefit-card">
+                    <lord-icon
+                        src="https://cdn.lordicon.com/vdvamqlr.json"
+                        trigger="hover"
+                        colors="primary:#0066cc">
+                    </lord-icon>
+                    <h3>Comfortable Journey</h3>
+                    <p>Modern buses with comfortable seating and air conditioning</p>
+                </div>
+                <div class="benefit-card">
+                    <lord-icon
+                        src="https://cdn.lordicon.com/kbtmbyzy.json"
+                        trigger="hover"
+                        colors="primary:#0066cc">
+                    </lord-icon>
+                    <h3>Safe Travel</h3>
+                    <p>Experienced drivers and well-maintained vehicles</p>
+                </div>
+                <div class="benefit-card">
+                    <lord-icon
+                        src="https://cdn.lordicon.com/zpxybbhl.json"
+                        trigger="hover"
+                        colors="primary:#0066cc">
+                    </lord-icon>
+                    <h3>Affordable Pricing</h3>
+                    <p>Competitive rates with no hidden charges</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="parcel-services">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/aqxkcqcl.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Parcel Services
+            </h2>
+            <p>Fast and Reliable Parcel Delivery between Garissa and Nairobi</p>
+            <button id="parcelBtn" class="btn">Send a Parcel</button>
+        </section>
+
+        <section class="faq-section">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/ktdqmtfn.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Frequently Asked Questions
+            </h2>
+            <div class="faq-item">
+                <div class="faq-question">What are the bus departure times?</div>
+                <div class="faq-answer">Daily departures at 6:00 AM, 10:00 AM, and 2:00 PM</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question">How can I track my parcel?</div>
+                <div class="faq-answer">You can track your parcel by calling our support line or using the tracking number provided at booking</div>
+            </div>
+            <div class="faq-item">
+                <div class="faq-question">What is the luggage policy?</div>
+                <div class="faq-answer">Each passenger is allowed one bag up to 20kg and one small carry-on</div>
+            </div>
+        </section>
+    </div>
+
+    <!-- SweetAlert2 and Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
+    <script>
+        // Booking Form Submission
+        document.getElementById('bookingForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const from = document.getElementById('from').value;
+            const to = document.getElementById('to').value;
+            const date = document.getElementById('date').value;
+            const passengers = document.getElementById('passengers').value;
+
+            if (from && to && date && passengers) {
+                Swal.fire({
+                    title: 'Booking Confirmed!',
+                    html: `
+                        <strong>Route:</strong> ${from} to ${to}<br>
+                        <strong>Date:</strong> ${date}<br>
+                        <strong>Passengers:</strong> ${passengers}
+                    `,
+                    icon: 'success',
+                    confirmButtonText: 'Great!'
+                });
+            } else {
+                Swal.fire({
+                    title: 'Oops...',
+                    text: 'Please fill in all details',
+                    icon: 'error'
+                });
+            }
+        });
+
+        // Dynamic destination update
+        document.getElementById('from').addEventListener('change', function() {
+            const toSelect = document.getElementById('to');
+            const fromValue = this.value;
+            
+            toSelect.innerHTML = `
+                <option value="">Select Destination</option>
+                <option value="${fromValue === 'Garissa' ? 'Nairobi' : 'Garissa'}">
+                    ${fromValue === 'Garissa' ? 'Nairobi' : 'Garissa'}
+                </option>
+            `;
+        });
+
+        // Parcel Service Button
+        document.getElementById('parcelBtn').addEventListener('click', function() {
+            Swal.fire({
+                title: 'Send a Parcel',
+                html: `
+                    <input type="text" id="parcelSender" class="swal2-input" placeholder="Sender Name">
+                    <input type="text" id="parcelReceiver" class="swal2-input" placeholder="Receiver Name">
+                    <input type="text" id="parcelWeight" class="swal2-input" placeholder="Parcel Weight (kg)">
+                `,
+                confirmButtonText: 'Send Parcel',
+                preConfirm: () => {
+                    const sender = document.getElementById('parcelSender').value;
+                    const receiver = document.getElementById('parcelReceiver').value;
+                    const weight = document.getElementById('parcelWeight').value;
+                    
+                    if (!sender || !receiver || !weight) {
+                        Swal.showValidationMessage('Please fill in all fields');
+                    }
+                    return { sender, receiver, weight };
+                }
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    Swal.fire({
+                        title: 'Parcel Booking Confirmed!',
+                        icon: 'success',
+                        text: `Parcel will be sent from ${result.value.sender} to ${result.value.receiver}`
+                    });
+                }
+            });
+        });
+
+        // FAQ Functionality
+        document.querySelectorAll('.faq-question').forEach(question => {
+            question.addEventListener('click', function() {
+                const answer = this.nextElementSibling;
+                answer.style.display = answer.style.display === 'block' ? 'none' : 'block';
+            });
+        });
+    </script>
+</body>
+</html>
