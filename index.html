@@ -467,6 +467,119 @@
                 grid-template-columns: 1fr;
             }
         }
+          .fleet-container {
+        background: rgba(255,255,255,0.9);
+        border-radius: 15px;
+        padding: 20px;
+    }
+
+    .fleet-selector {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 20px;
+    }
+
+    .fleet-tab {
+        background: none;
+        border: 2px solid var(--primary-blue);
+        color: var(--primary-blue);
+        padding: 10px 20px;
+        margin: 0 10px;
+        border-radius: 25px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+
+    .fleet-tab.active {
+        background: var(--primary-blue);
+        color: white;
+    }
+
+    .fleet-details {
+        display: flex;
+        gap: 20px;
+    }
+
+    .fleet-images {
+        flex: 1;
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .fleet-image-gallery {
+        display: none;
+        flex: 0 0 100%;
+        width: 100%;
+    }
+
+    .fleet-image-gallery.active {
+        display: flex;
+        gap: 10px;
+    }
+
+    .fleet-image-gallery img {
+        flex: 1;
+        max-width: 100%;
+        height: 250px;
+        object-fit: cover;
+        border-radius: 10px;
+        scroll-snap-align: center;
+        transition: transform 0.3s ease;
+    }
+
+    .fleet-image-gallery img:hover {
+        transform: scale(1.05);
+    }
+
+    .fleet-description {
+        flex: 1;
+    }
+
+    .description {
+        display: none;
+    }
+
+    .description.active {
+        display: block;
+    }
+
+    .description ul {
+        list-style-type: none;
+        padding: 0;
+    }
+
+    .description ul li {
+        padding: 10px 0;
+        border-bottom: 1px solid rgba(0,0,0,0.1);
+    }
+
+    .fleet-stats {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 20px;
+    }
+
+    .fleet-stats .stat {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(0,102,204,0.1);
+        padding: 10px;
+        border-radius: 10px;
+    }
+
+    .fleet-stats .stat i {
+        color: var(--primary-blue);
+    }
+
+    @media (max-width: 768px) {
+        .fleet-details {
+            flex-direction: column;
+        }
+    }
     </style>
 </head>
 <body>
@@ -540,27 +653,77 @@
         </section>
 
         <!-- Bus Preview Section -->
-        <section class="section-card">
-            <h2>
-                <lord-icon
-                    src="https://cdn.lordicon.com/qtqvorqk.json"
-                    trigger="hover"
-                    colors="primary:#0066cc,secondary:#1e90ff"
-                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
-                </lord-icon>
-                Our Fleet
-            </h2>
-            <div class="bus-preview">
-                <div class="bus-type">
-                    <h3>Standard Coach</h3>
-                    <p>Comfortable seating, air conditioning</p>
+       <section class="section-card" id="fleet">
+    <h2>
+        <lord-icon
+            src="https://cdn.lordicon.com/qtqvorqk.json"
+            trigger="hover"
+            colors="primary:#0066cc,secondary:#1e90ff"
+            style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+        </lord-icon>
+        Our Fleet
+    </h2>
+    <div class="fleet-container">
+        <div class="fleet-selector">
+            <button class="fleet-tab active" data-type="standard">Standard Coach</button>
+            <button class="fleet-tab" data-type="vip">VIP Coach</button>
+        </div>
+        <div class="fleet-details">
+            <div class="fleet-images" id="fleetImages">
+                <div class="fleet-image-gallery standard active">
+                    <img src="/api/placeholder/400/250" alt="Standard Coach Interior" data-src="standard-1.jpg">
+                    <img src="/api/placeholder/400/250" alt="Standard Coach Exterior" data-src="standard-2.jpg">
+                    <img src="/api/placeholder/400/250" alt="Standard Coach Seating" data-src="standard-3.jpg">
                 </div>
-                <div class="bus-type">
-                    <h3>VIP Coach</h3>
-                    <p>Extra legroom, WiFi, charging ports</p>
+                <div class="fleet-image-gallery vip">
+                    <img src="/api/placeholder/400/250" alt="VIP Coach Interior" data-src="vip-1.jpg">
+                    <img src="/api/placeholder/400/250" alt="VIP Coach Amenities" data-src="vip-2.jpg">
+                    <img src="/api/placeholder/400/250" alt="VIP Coach Workspace" data-src="vip-3.jpg">
                 </div>
             </div>
-        </section>
+            <div class="fleet-description">
+                <div class="description standard active">
+                    <h3>Standard Coach</h3>
+                    <ul>
+                        <li>Comfortable seating with ample legroom</li>
+                        <li>Air conditioning for a pleasant journey</li>
+                        <li>Large windows for scenic views</li>
+                        <li>Affordable pricing</li>
+                    </ul>
+                    <div class="fleet-stats">
+                        <div class="stat">
+                            <i class="fas fa-chair"></i>
+                            <span>Seats: 46</span>
+                        </div>
+                        <div class="stat">
+                            <i class="fas fa-route"></i>
+                            <span>Range: 500 km</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="description vip">
+                    <h3>VIP Coach</h3>
+                    <ul>
+                        <li>Extra spacious seats with full recline</li>
+                        <li>Free high-speed WiFi</li>
+                        <li>Personal charging ports</li>
+                        <li>Complimentary refreshments</li>
+                    </ul>
+                    <div class="fleet-stats">
+                        <div class="stat">
+                            <i class="fas fa-chair"></i>
+                            <span>Seats: 28</span>
+                        </div>
+                        <div class="stat">
+                            <i class="fas fa-wifi"></i>
+                            <span>WiFi Enabled</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
 
         <!-- Routes Section -->
         <section class="section-card">
@@ -814,6 +977,27 @@
                 });
             }
         });
+         document.addEventListener('DOMContentLoaded', function() {
+        const fleetTabs = document.querySelectorAll('.fleet-tab');
+        const fleetGalleries = document.querySelectorAll('.fleet-image-gallery');
+        const fleetDescriptions = document.querySelectorAll('.description');
+
+        fleetTabs.forEach(tab => {
+            tab.addEventListener('click', function() {
+                const type = this.getAttribute('data-type');
+
+                // Reset all tabs and galleries
+                fleetTabs.forEach(t => t.classList.remove('active'));
+                fleetGalleries.forEach(g => g.classList.remove('active'));
+                fleetDescriptions.forEach(d => d.classList.remove('active'));
+
+                // Activate current tab, gallery, and description
+                this.classList.add('active');
+                document.querySelector(`.fleet-image-gallery.${type}`).classList.add('active');
+                document.querySelector(`.description.${type}`).classList.add('active');
+            });
+        });
+    });
 
         // Parcel Services Button
         document.getElementById('parcelBtn').addEventListener('click', function() {
