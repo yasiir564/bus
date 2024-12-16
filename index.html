@@ -291,7 +291,7 @@
         </div>
     </nav>
 
-    <!-- Existing Header -->
+    <!-- Header -->
     <header>
         <div class="container">
             <h1>Pacific Coach</h1>
@@ -299,30 +299,116 @@
         </div>
     </header>
 
-    <!-- Existing Sections Container -->
     <div class="container">
-        <div class="sections-grid">
-            <!-- Previous sections remain the same... -->
-            <!-- Booking Section -->
-            <section class="section-card" id="bookings">
-                <!-- ... (existing booking form) ... -->
-            </section>
+        <!-- Booking Section -->
+        <section class="section-card" id="bookings">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/kbtmbydc.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Book Your Journey
+            </h2>
+            <form id="bookingForm">
+                <div class="form-group">
+                    <label for="from">From</label>
+                    <select id="from" required>
+                        <option value="">Select Origin</option>
+                        <option value="Garissa">Garissa</option>
+                        <option value="Nairobi">Nairobi</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="to">To</label>
+                    <select id="to" required>
+                        <option value="">Select Destination</option>
+                        <option value="Nairobi">Nairobi</option>
+                        <option value="Garissa">Garissa</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="date">Date</label>
+                    <input type="date" id="date" required>
+                </div>
+                <div class="form-group">
+                    <label for="passengers">Passengers</label>
+                    <select id="passengers" required>
+                        <option value="">Select Number of Passengers</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn">Book Now</button>
+            </form>
+        </section>
 
-            <!-- Bus Preview Section -->
-            <section class="section-card">
-                <!-- ... (existing bus preview) ... -->
-            </section>
+        <!-- Bus Preview Section -->
+        <section class="section-card">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/qtqvorqk.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Our Fleet
+            </h2>
+            <div class="bus-preview">
+                <div class="bus-type">
+                    <h3>Standard Coach</h3>
+                    <p>Comfortable seating, air conditioning</p>
+                </div>
+                <div class="bus-type">
+                    <h3>VIP Coach</h3>
+                    <p>Extra legroom, WiFi, charging ports</p>
+                </div>
+            </div>
+        </section>
 
-            <!-- Routes Section -->
-            <section class="section-card">
-                <!-- ... (existing routes) ... -->
-            </section>
+        <!-- Routes Section -->
+        <section class="section-card">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/auvicynv.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Our Routes
+            </h2>
+            <div class="routes-list">
+                <div class="route">
+                    <h3>Garissa to Nairobi</h3>
+                    <p>Daily Departures: 6 AM, 12 PM, 6 PM</p>
+                </div>
+                <div class="route">
+                    <h3>Nairobi to Garissa</h3>
+                    <p>Daily Departures: 7 AM, 1 PM, 7 PM</p>
+                </div>
+            </div>
+        </section>
 
-            <!-- Parcel Services Section -->
-            <section class="section-card">
-                <!-- ... (existing parcel services) ... -->
-            </section>
-        </div>
+        <!-- Parcel Services Section -->
+        <section class="section-card">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/uutnmngi.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                Parcel Services
+            </h2>
+            <div class="parcel-info">
+                <p>Fast and reliable parcel delivery between Garissa and Nairobi</p>
+                <button id="parcelBtn" class="btn">Send a Parcel</button>
+            </div>
+        </section>
 
         <!-- Benefits Section -->
         <section class="section-card" id="benefits">
@@ -355,6 +441,54 @@
                     <i class="fas fa-hand-holding-usd"></i>
                     <h3>Affordable Pricing</h3>
                     <p>Competitive rates without compromising on quality and comfort.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Testimonials Section -->
+        <section class="section-card" id="testimonials">
+            <h2>
+                <lord-icon
+                    src="https://cdn.lordicon.com/hbwgdbv.json"
+                    trigger="hover"
+                    colors="primary:#0066cc,secondary:#1e90ff"
+                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+                </lord-icon>
+                What Our Customers Say
+            </h2>
+            <div class="testimonials-grid">
+                <div class="testimonial-card">
+                    <i class="fas fa-quote-right quote-icon"></i>
+                    <p>"Pacific Coach has been my go-to transportation service. Always punctual and comfortable!"</p>
+                    <div class="client-info">
+                        <div class="client-avatar">JM</div>
+                        <div class="client-details">
+                            <strong>John Muthomi</strong>
+                            <p>Business Professional</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="testimonial-card">
+                    <i class="fas fa-quote-right quote-icon"></i>
+                    <p>"Reliable parcel service. I trust Pacific Coach to deliver my packages safely and on time."</p>
+                    <div class="client-info">
+                        <div class="client-avatar">SM</div>
+                        <div class="client-details">
+                            <strong>Sarah Mwende</strong>
+                            <p>Small Business Owner</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="testimonial-card">
+                    <i class="fas fa-quote-right quote-icon"></i>
+                    <p>"Comfortable VIP coaches with WiFi. Makes my long journeys much more enjoyable!"</p>
+                    <div class="client-info">
+                        <div class="client-avatar">DK</div>
+                        <div class="client-details">
+                            <strong>David Kamau</strong>
+                            <p>Digital Nomad</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
@@ -437,7 +571,8 @@
                     <h3>Contact Us</h3>
                     <ul>
                         <li>Email: support@pacificcoach.com</li>
-                        <li>Phone: +254 700 000 000<li>Address: Garissa, Kenya</li>
+                        <li>Phone: +254 700 000 000</li>
+                        <li>Address: Garissa, Kenya</li>
                         <li>Working Hours: 6 AM - 8 PM</li>
                     </ul>
                 </div>
