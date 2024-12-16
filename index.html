@@ -356,6 +356,90 @@
             color: white;
             font-weight: bold;
         }
+        .bus-preview {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+        }
+
+        .bus-card {
+            text-align: center;
+            background: rgba(255,255,255,0.8);
+            border-radius: 10px;
+            padding: 15px;
+            width: 250px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .bus-card img {
+            max-width: 100%;
+            border-radius: 10px;
+            transition: transform 0.3s ease;
+        }
+
+        .bus-card:hover img {
+            transform: scale(1.05);
+        }
+
+        .routes-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0 10px;
+        }
+
+        .routes-table th, .routes-table td {
+            background: rgba(255,255,255,0.8);
+            padding: 12px;
+            text-align: left;
+            border-radius: 5px;
+        }
+
+        .routes-table th {
+            background: var(--primary-blue);
+            color: white;
+        }
+
+        .form-group input, 
+        .form-group select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid rgba(0,0,0,0.1);
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .form-group input:focus, 
+        .form-group select:focus {
+            outline: none;
+            border-color: var(--primary-blue);
+            box-shadow: 0 0 0 3px rgba(30,144,255,0.2);
+        }
+
+        .btn {
+            display: inline-block;
+            background: linear-gradient(to right, var(--gradient-start), var(--gradient-end));
+            color: var(--white);
+            padding: 12px 25px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 7px 14px rgba(0,0,0,0.15);
+        }
+
+        @media (max-width: 768px) {
+            .sections-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
