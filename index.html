@@ -125,6 +125,33 @@
         background-repeat: no-repeat;
         overflow: hidden;
     }
+        /* Parallax Scrolling Styles */
+.parallax-container {
+    perspective: 1px;
+    height: 100vh;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.parallax-bg {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    transform: translateZ(-1px) scale(2);
+    background-image: url('path_to_background_image.jpg');
+    background-size: cover;
+    background-position: center;
+    z-index: -1;
+}
+
+.parallax-content {
+    position: relative;
+    padding: 50px;
+    background-color: rgba(255,255,255,0.8);
+    transform: translateZ(0);
+}
 
     header::before {
         content: '';
@@ -463,6 +490,9 @@
         <h1>Pacific Coach</h1>
         <p>Premium Transportation & Logistics</p>
     </div>
+       <div class="parallax-container">
+    <div class="parallax-bg"></div>
+    <header class="parallax-content">
 </header>
 
     <div class="container">
@@ -874,6 +904,14 @@
                 }
             });
         });
+        window.addEventListener('scroll', () => {
+    const parallaxBg = document.querySelector('.parallax-bg');
+    let scrollPosition = window.pageYOffset;
+    
+    if (parallaxBg) {
+        parallaxBg.style.transform = `translateY(${scrollPosition * 0.5}px)`;
+    }
+});
     </script>
 </body>
 </html>
