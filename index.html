@@ -580,6 +580,78 @@
             flex-direction: column;
         }
     }
+        .routes-container {
+        background: rgba(255,255,255,0.9);
+        border-radius: 15px;
+        padding: 20px;
+    }
+
+    .routes-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+        gap: 20px;
+    }
+
+    .route-card {
+        background: var(--white);
+        border-radius: 10px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        overflow: hidden;
+    }
+
+    .route-header {
+        background: var(--primary-blue);
+        color: var(--white);
+        padding: 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .route-header h3 {
+        margin: 0;
+    }
+
+    .route-duration {
+        font-size: 0.9rem;
+        font-weight: 500;
+    }
+
+    .route-details {
+        padding: 20px;
+    }
+
+    .route-departures h4 {
+        margin-bottom: 10px;
+    }
+
+    .route-departures ul {
+        list-style-type: none;
+        padding: 0;
+    }
+
+    .route-departures ul li {
+        padding: 5px 0;
+    }
+
+    .route-stats {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 20px;
+    }
+
+    .route-stats .stat {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(0,102,204,0.1);
+        padding: 10px;
+        border-radius: 10px;
+    }
+
+    .route-stats .stat i {
+        color: var(--primary-blue);
+    }
     </style>
 </head>
 <body>
@@ -726,27 +798,74 @@
 </section>
 
         <!-- Routes Section -->
-        <section class="section-card">
-            <h2>
-                <lord-icon
-                    src="https://cdn.lordicon.com/auvicynv.json"
-                    trigger="hover"
-                    colors="primary:#0066cc,secondary:#1e90ff"
-                    style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
-                </lord-icon>
-                Our Routes
-            </h2>
-            <div class="routes-list">
-                <div class="route">
+       <section class="section-card" id="routes">
+    <h2>
+        <lord-icon
+            src="https://cdn.lordicon.com/auvicynv.json"
+            trigger="hover"
+            colors="primary:#0066cc,secondary:#1e90ff"
+            style="width:50px;height:50px;vertical-align:middle;margin-right:10px;">
+        </lord-icon>
+        Our Routes
+    </h2>
+    <div class="routes-container">
+        <div class="routes-grid">
+            <div class="route-card">
+                <div class="route-header">
                     <h3>Garissa to Nairobi</h3>
-                    <p>Daily Departures: 6 AM, 12 PM, 6 PM</p>
+                    <div class="route-duration">Duration: 4 hrs 30 mins</div>
                 </div>
-                <div class="route">
-                    <h3>Nairobi to Garissa</h3>
-                    <p>Daily Departures: 7 AM, 1 PM, 7 PM</p>
+                <div class="route-details">
+                    <div class="route-departures">
+                        <h4>Departures</h4>
+                        <ul>
+                            <li>6:00 AM</li>
+                            <li>12:00 PM</li>
+                            <li>6:00 PM</li>
+                        </ul>
+                    </div>
+                    <div class="route-stats">
+                        <div class="stat">
+                            <i class="fas fa-road"></i>
+                            <span>365 km</span>
+                        </div>
+                        <div class="stat">
+                            <i class="fas fa-clock"></i>
+                            <span>4h 30m</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </section>
+            <div class="route-card">
+                <div class="route-header">
+                    <h3>Nairobi to Garissa</h3>
+                    <div class="route-duration">Duration: 4 hrs 30 mins</div>
+                </div>
+                <div class="route-details">
+                    <div class="route-departures">
+                        <h4>Departures</h4>
+                        <ul>
+                            <li>7:00 AM</li>
+                            <li>1:00 PM</li>
+                            <li>7:00 PM</li>
+                        </ul>
+                    </div>
+                    <div class="route-stats">
+                        <div class="stat">
+                            <i class="fas fa-road"></i>
+                            <span>365 km</span>
+                        </div>
+                        <div class="stat">
+                            <i class="fas fa-clock"></i>
+                            <span>4h 30m</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
 
         <!-- Parcel Services Section -->
         <section class="section-card">
