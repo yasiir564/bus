@@ -3,13 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Modern Ticket Booking System</title>
+    <title>Nairobi-Garissa Bus Booking</title>
     <style>
         :root {
-            --primary: #2563eb;
-            --background: #f8fafc;
+            --primary: #3b82f6;
+            --secondary: #1d4ed8;
+            --background: #f1f5f9;
             --card: #ffffff;
             --text: #1e293b;
+            --error: #ef4444;
+            --success: #22c55e;
         }
 
         * {
@@ -27,8 +30,20 @@
         }
 
         .container {
-            max-width: 800px;
+            max-width: 1000px;
             margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .logo {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
         }
 
         .booking-form {
@@ -39,14 +54,18 @@
             margin-bottom: 2rem;
         }
 
-        h1 {
-            font-size: 1.875rem;
-            margin-bottom: 1.5rem;
-            color: var(--primary);
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
         }
 
         .form-group {
             margin-bottom: 1.5rem;
+        }
+
+        .form-group.full-width {
+            grid-column: span 2;
         }
 
         label {
@@ -61,12 +80,73 @@
             border: 1px solid #e2e8f0;
             border-radius: 0.5rem;
             font-size: 1rem;
-            transition: border-color 0.2s;
+            transition: all 0.2s;
         }
 
         input:focus, select:focus {
             outline: none;
             border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .schedule-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .time-slot {
+            padding: 0.75rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.5rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .time-slot:hover {
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .time-slot.selected {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        .seat-map {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .seat {
+            aspect-ratio: 1;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .seat:hover {
+            border-color: var(--primary);
+        }
+
+        .seat.selected {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        .seat.booked {
+            background: #e2e8f0;
+            cursor: not-allowed;
         }
 
         button {
@@ -77,11 +157,12 @@
             border-radius: 0.5rem;
             font-size: 1rem;
             cursor: pointer;
-            transition: opacity 0.2s;
+            transition: all 0.2s;
+            width: 100%;
         }
 
         button:hover {
-            opacity: 0.9;
+            background: var(--secondary);
         }
 
         .ticket {
@@ -90,7 +171,25 @@
             padding: 2rem;
             border-radius: 1rem;
             box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-            margin-top: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .ticket::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url("data:image/svg+xml,%3Csvg width='40' height='40' viewBox='0 0 40 40' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23f1f5f9' fill-opacity='1' fill-rule='evenodd'%3E%3Cpath d='M0 40L40 0H20L0 20M40 40V20L20 40'/%3E%3C/g%3E%3C/svg%3E");
+            opacity: 0.1;
+            z-index: 0;
+        }
+
+        .ticket-content {
+            position: relative;
+            z-index: 1;
         }
 
         .ticket-header {
@@ -102,16 +201,10 @@
             border-bottom: 2px dashed #e2e8f0;
         }
 
-        .ticket-logo {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: var(--primary);
-        }
-
         .ticket-details {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            gap: 1rem;
+            gap: 1.5rem;
         }
 
         .detail-item {
@@ -119,8 +212,13 @@
         }
 
         .detail-label {
-            font-weight: 500;
+            font-size: 0.875rem;
             color: #64748b;
+            margin-bottom: 0.25rem;
+        }
+
+        .detail-value {
+            font-weight: 500;
         }
 
         .ticket-footer {
@@ -131,140 +229,351 @@
         }
 
         .qr-code {
-            width: 100px;
-            height: 100px;
+            width: 120px;
+            height: 120px;
             margin: 1rem auto;
             background: #e2e8f0;
+            border-radius: 0.5rem;
         }
 
-        @media print {
-            .booking-form, .print-button {
-                display: none;
+        @media (max-width: 768px) {
+            .form-grid {
+                grid-template-columns: 1fr;
             }
-            .ticket {
-                display: block;
-                box-shadow: none;
-            }
-        }
 
-        @media (max-width: 640px) {
+            .form-group.full-width {
+                grid-column: span 1;
+            }
+
             .ticket-details {
                 grid-template-columns: 1fr;
             }
+        }
+
+        .price-details {
+            background: #f8fafc;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        .price-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+        }
+
+        .price-total {
+            font-weight: bold;
+            border-top: 1px solid #e2e8f0;
+            padding-top: 0.5rem;
+            margin-top: 0.5rem;
         }
     </style>
 </head>
 <body>
     <div class="container">
+        <div class="header">
+            <div class="logo">SafariLink Express</div>
+            <p>Nairobi ↔ Garissa Daily Bus Service</p>
+        </div>
+
         <div class="booking-form">
-            <h1>Book Your Ticket</h1>
             <form id="bookingForm">
-                <div class="form-group">
-                    <label for="name">Full Name</label>
-                    <input type="text" id="name" required>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="route">Route</label>
+                        <select id="route" required>
+                            <option value="">Select Route</option>
+                            <option value="nairobi-garissa">Nairobi to Garissa</option>
+                            <option value="garissa-nairobi">Garissa to Nairobi</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="travelDate">Travel Date</label>
+                        <input type="date" id="travelDate" required>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label>Available Time Slots</label>
+                        <div class="schedule-grid" id="timeSlots">
+                            <div class="time-slot" data-time="06:00">6:00 AM</div>
+                            <div class="time-slot" data-time="08:00">8:00 AM</div>
+                            <div class="time-slot" data-time="10:00">10:00 AM</div>
+                            <div class="time-slot" data-time="14:00">2:00 PM</div>
+                            <div class="time-slot" data-time="16:00">4:00 PM</div>
+                            <div class="time-slot" data-time="20:00">8:00 PM</div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="fullName">Full Name</label>
+                        <input type="text" id="fullName" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="idNumber">ID Number</label>
+                        <input type="text" id="idNumber" required pattern="[0-9]{8}" title="Please enter a valid 8-digit ID number">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="phone">Phone Number</label>
+                        <input type="tel" id="phone" required pattern="[0-9]{10}" title="Please enter a valid 10-digit phone number">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="email">Email Address</label>
+                        <input type="email" id="email" required>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <label>Select Seat</label>
+                        <div class="seat-map" id="seatMap"></div>
+                    </div>
+
+                    <div class="form-group full-width">
+                        <div class="price-details">
+                            <div class="price-row">
+                                <span>Base Fare</span>
+                                <span>KSh 2,500</span>
+                            </div>
+                            <div class="price-row">
+                                <span>Booking Fee</span>
+                                <span>KSh 100</span>
+                            </div>
+                            <div class="price-row price-total">
+                                <span>Total</span>
+                                <span>KSh 2,600</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label for="email">Email</label>
-                    <input type="email" id="email" required>
-                </div>
-                <div class="form-group">
-                    <label for="event">Event</label>
-                    <select id="event" required>
-                        <option value="">Select an event</option>
-                        <option value="concert">Summer Concert 2024</option>
-                        <option value="conference">Tech Conference 2024</option>
-                        <option value="festival">Arts Festival 2024</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="date">Date</label>
-                    <input type="date" id="date" required>
-                </div>
-                <div class="form-group">
-                    <label for="quantity">Number of Tickets</label>
-                    <input type="number" id="quantity" min="1" max="10" value="1" required>
-                </div>
-                <button type="submit">Generate Ticket</button>
+
+                <button type="submit">Book Ticket</button>
             </form>
         </div>
 
         <div id="ticket" class="ticket">
-            <div class="ticket-header">
-                <div class="ticket-logo">EventPro</div>
-                <div class="ticket-number"></div>
-            </div>
-            <div class="ticket-details">
-                <div class="detail-item">
-                    <div class="detail-label">Name</div>
-                    <div class="detail-value" id="ticketName"></div>
+            <div class="ticket-content">
+                <div class="ticket-header">
+                    <div class="ticket-logo">SafariLink Express</div>
+                    <div class="ticket-number"></div>
                 </div>
-                <div class="detail-item">
-                    <div class="detail-label">Email</div>
-                    <div class="detail-value" id="ticketEmail"></div>
+                <div class="ticket-details">
+                    <div class="detail-item">
+                        <div class="detail-label">Passenger Name</div>
+                        <div class="detail-value" id="ticketName"></div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">ID Number</div>
+                        <div class="detail-value" id="ticketId"></div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Route</div>
+                        <div class="detail-value" id="ticketRoute"></div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Travel Date</div>
+                        <div class="detail-value" id="ticketDate"></div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Departure Time</div>
+                        <div class="detail-value" id="ticketTime"></div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Seat Number</div>
+                        <div class="detail-value" id="ticketSeat"></div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Phone</div>
+                        <div class="detail-value" id="ticketPhone"></div>
+                    </div>
+                    <div class="detail-item">
+                        <div class="detail-label">Booking Reference</div>
+                        <div class="detail-value" id="ticketReference"></div>
+                    </div>
                 </div>
-                <div class="detail-item">
-                    <div class="detail-label">Event</div>
-                    <div class="detail-value" id="ticketEvent"></div>
+                <div class="ticket-footer">
+                    <div class="qr-code"></div>
+                    <p>Please arrive 30 minutes before departure</p>
+                    <p>Present this ticket at the boarding point</p>
                 </div>
-                <div class="detail-item">
-                    <div class="detail-label">Date</div>
-                    <div class="detail-value" id="ticketDate"></div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Quantity</div>
-                    <div class="detail-value" id="ticketQuantity"></div>
-                </div>
-                <div class="detail-item">
-                    <div class="detail-label">Order ID</div>
-                    <div class="detail-value" id="ticketOrderId"></div>
-                </div>
-            </div>
-            <div class="ticket-footer">
-                <div class="qr-code"></div>
-                <p>Please present this ticket at the entrance</p>
             </div>
         </div>
-
-        <button onclick="window.print()" class="print-button" style="display: none; margin-top: 1rem;">Print Ticket</button>
     </div>
 
     <script>
+        // Generate seats
+          const seatMap = document.getElementById('seatMap');
+        for (let i = 1; i <= 44; i++) {
+            const seat = document.createElement('div');
+            seat.className = 'seat';
+            seat.textContent = i;
+            seat.dataset.seatNumber = i;
+            
+            // Randomly mark some seats as booked
+            if (Math.random() < 0.3) {
+                seat.classList.add('booked');
+            }
+            
+            seatMap.appendChild(seat);
+        }
+
+        // Time slot selection
+        const timeSlots = document.querySelectorAll('.time-slot');
+        timeSlots.forEach(slot => {
+            slot.addEventListener('click', () => {
+                if (!slot.classList.contains('booked')) {
+                    timeSlots.forEach(s => s.classList.remove('selected'));
+                    slot.classList.add('selected');
+                }
+            });
+        });
+
+        // Seat selection
+        const seats = document.querySelectorAll('.seat');
+        seats.forEach(seat => {
+            seat.addEventListener('click', () => {
+                if (!seat.classList.contains('booked')) {
+                    seats.forEach(s => s.classList.remove('selected'));
+                    seat.classList.add('selected');
+                }
+            });
+        });
+
+        // Set minimum date to today
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('travelDate').min = today;
+
+        // Form submission handler
         document.getElementById('bookingForm').addEventListener('submit', function(e) {
             e.preventDefault();
             
+            // Validate selections
+            const selectedTime = document.querySelector('.time-slot.selected');
+            const selectedSeat = document.querySelector('.seat.selected');
+            
+            if (!selectedTime) {
+                alert('Please select a time slot');
+                return;
+            }
+            
+            if (!selectedSeat) {
+                alert('Please select a seat');
+                return;
+            }
+
             // Get form values
-            const name = document.getElementById('name').value;
-            const email = document.getElementById('email').value;
-            const event = document.getElementById('event');
-            const eventName = event.options[event.selectedIndex].text;
-            const date = new Date(document.getElementById('date').value).toLocaleDateString();
-            const quantity = document.getElementById('quantity').value;
-            const orderId = generateOrderId();
+            const route = document.getElementById('route');
+            const routeText = route.options[route.selectedIndex].text;
+            const date = new Date(document.getElementById('travelDate').value).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric'
+            });
+            const name = document.getElementById('fullName').value;
+            const idNumber = document.getElementById('idNumber').value;
+            const phone = document.getElementById('phone').value;
+            const reference = generateReference();
 
             // Update ticket details
             document.getElementById('ticketName').textContent = name;
-            document.getElementById('ticketEmail').textContent = email;
-            document.getElementById('ticketEvent').textContent = eventName;
+            document.getElementById('ticketId').textContent = idNumber;
+            document.getElementById('ticketRoute').textContent = routeText;
             document.getElementById('ticketDate').textContent = date;
-            document.getElementById('ticketQuantity').textContent = quantity;
-            document.getElementById('ticketOrderId').textContent = orderId;
-            document.querySelector('.ticket-number').textContent = `#${orderId.slice(-6)}`;
+            document.getElementById('ticketTime').textContent = selectedTime.textContent;
+            document.getElementById('ticketSeat').textContent = selectedSeat.dataset.seatNumber;
+            document.getElementById('ticketPhone').textContent = formatPhoneNumber(phone);
+            document.getElementById('ticketReference').textContent = reference;
+            document.querySelector('.ticket-number').textContent = `#${reference}`;
 
-            // Show ticket and print button
+            // Show ticket
             document.getElementById('ticket').style.display = 'block';
-            document.querySelector('.print-button').style.display = 'block';
-
+            
             // Scroll to ticket
             document.getElementById('ticket').scrollIntoView({ behavior: 'smooth' });
         });
 
-        function generateOrderId() {
-            return 'ORDER-' + Math.random().toString(36).substr(2, 9).toUpperCase();
+        // Generate booking reference
+        function generateReference() {
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            let reference = 'SLE-';
+            for (let i = 0; i < 6; i++) {
+                reference += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return reference;
         }
 
-        // Set minimum date to today
-        const today = new Date().toISOString().split('T')[0];
-        document.getElementById('date').min = today;
+        // Format phone number
+        function formatPhoneNumber(phone) {
+            return `+254 ${phone.slice(-9)}`;
+        }
+
+        // Update available times based on route
+        document.getElementById('route').addEventListener('change', function(e) {
+            const timeSlots = document.querySelectorAll('.time-slot');
+            timeSlots.forEach(slot => {
+                slot.classList.remove('selected', 'booked');
+                // Randomly mark some slots as booked based on route
+                if (Math.random() < 0.3) {
+                    slot.classList.add('booked');
+                }
+            });
+        });
+
+        // Update seat availability based on date and time
+        document.getElementById('travelDate').addEventListener('change', function(e) {
+            const seats = document.querySelectorAll('.seat');
+            seats.forEach(seat => {
+                seat.classList.remove('selected', 'booked');
+                // Randomly mark some seats as booked for the new date
+                if (Math.random() < 0.3) {
+                    seat.classList.add('booked');
+                }
+            });
+        });
+
+        // Initialize tooltips for booked items
+        const bookedItems = document.querySelectorAll('.booked');
+        bookedItems.forEach(item => {
+            item.title = 'Already booked';
+        });
+
+        // Format phone number input
+        document.getElementById('phone').addEventListener('input', function(e) {
+            this.value = this.value.replace(/\D/g, '').slice(0, 10);
+        });
+
+        // Format ID number input
+        document.getElementById('idNumber').addEventListener('input', function(e) {
+            this.value = this.value.replace(/\D/g, '').slice(0, 8);
+        });
+
+        // Validate email format
+        document.getElementById('email').addEventListener('blur', function(e) {
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(this.value)) {
+                this.setCustomValidity('Please enter a valid email address');
+            } else {
+                this.setCustomValidity('');
+            }
+        });
+
+        // Add loading state to submit button
+        const form = document.getElementById('bookingForm');
+        const submitButton = form.querySelector('button[type="submit"]');
+        
+        form.addEventListener('submit', function() {
+            submitButton.textContent = 'Processing...';
+            submitButton.disabled = true;
+            
+            // Simulate processing delay
+            setTimeout(() => {
+                submitButton.textContent = 'Book Ticket';
+                submitButton.disabled = false;
+            }, 1500);
+        });
     </script>
 </body>
 </html>
