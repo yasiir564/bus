@@ -9,8 +9,12 @@ from tqdm import tqdm
 from flask import Flask, request, jsonify, send_from_directory
 import logging
 from werkzeug.utils import secure_filename
+from flask_cors import CORS  # Import Flask-CORS
 
 app = Flask(__name__)
+# Configure CORS to allow file:// origin - this will attempt to allow your local HTML file
+CORS(app, resources={r"/api/*": {"origins": ["file:///C:/Users/Administrator/Documents", "null"]}})
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -118,9 +122,21 @@ def add_subtitles_to_video(video_path, srt_path, output_path):
         logger.error(f"Error adding subtitles: {e.stderr.decode() if e.stderr else str(e)}")
         return False
 
-@app.route('/api/transcribe', methods=['POST'])
+# Add CORS headers to all API endpoints
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    return response
+
+@app.route('/api/transcribe', methods=['POST', 'OPTIONS'])
 def transcribe_video():
     """API endpoint to transcribe a video and generate subtitled version."""
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 204
+        
     # Check if the request has the file
     if 'file' not in request.files:
         return jsonify({'error': 'No file provided'}), 400
