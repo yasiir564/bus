@@ -3,3 +3,4 @@ openai-whisper
 flask
 tqdm
 gunicorn
+flask_cors
