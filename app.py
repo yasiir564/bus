@@ -17,7 +17,7 @@ import whisper
 
 # Set resource limits
 # Limit virtual memory to 1.5GB (adjust as needed for your server)
-resource.setrlimit(resource.RLIMIT_AS, (1.5 * 1024 * 1024 * 1024, -1))
+resource.setrlimit(resource.RLIMIT_AS, (int(1.5 * 1024 * 1024 * 1024), -1))
 
 app = Flask(__name__)
 # Configure CORS to allow requests from specific origins
