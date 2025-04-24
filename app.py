@@ -5,7 +5,6 @@ import time
 import logging
 import hashlib
 import requests
-import subprocess
 import uuid
 import threading
 import tempfile
@@ -15,7 +14,8 @@ from functools import wraps, lru_cache
 import whisper
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+# Configure CORS to allow requests from specific origins
+CORS(app, resources={r"/*": {"origins": ["https://g-bus.vercel.app", "http://localhost:3000"]}})
 
 # Configuration
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -263,21 +263,6 @@ def generate_unique_filename(original_name):
     unique_id = uuid.uuid4().hex[:10]
     return f"{sanitize_filename(filename)}_{unique_id}{extension}"
 
-@lru_cache(maxsize=10)
-def get_ffmpeg_version():
-    """Cache the FFmpeg version to avoid repeated subprocess calls"""
-    try:
-        process = subprocess.run(
-            ["ffmpeg", "-version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True
-        )
-        return process.stdout.split('\n')[0]
-    except Exception as e:
-        return f"FFmpeg version check failed: {str(e)}"
-
 def cleanup_expired_files():
     """Remove files that haven't been accessed for CACHE_EXPIRY seconds"""
     current_time = time.time()
@@ -351,47 +336,14 @@ def download_tiktok_video(url):
         'filename': filename
     }
 
-def extract_audio(video_path):
-    """Extract audio from video file using FFmpeg"""
-    output_filename = f"{os.path.splitext(os.path.basename(video_path))[0]}.wav"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
-    
-    log_message(f"Extracting audio from {video_path} to {output_path}")
-    
-    ffmpeg_command = [
-        "ffmpeg", 
-        "-i", video_path, 
-        "-vn",  # No video
-        "-ar", "16000",  # Audio sample rate (16kHz for Whisper)
-        "-ac", "1",  # Mono
-        "-c:a", "pcm_s16le",  # PCM 16-bit little-endian format
-        output_path
-    ]
-    
-    process = subprocess.run(
-        ffmpeg_command, 
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    
-    # Check if conversion was successful
-    if process.returncode != 0:
-        raise Exception(f"FFmpeg extraction failed: {process.stderr}")
-    
-    # Check if output file exists
-    if not os.path.exists(output_path):
-        raise Exception("Output audio file was not created")
-    
-    return output_path
-
-def transcribe_audio(audio_path):
-    """Transcribe audio using Whisper"""
-    log_message(f"Transcribing audio: {audio_path}")
+def transcribe_audio_file(file_path):
+    """Transcribe audio using Whisper directly from a video file"""
+    log_message(f"Transcribing directly from file: {file_path}")
     
     try:
-        # Transcribe with Whisper
-        result = model.transcribe(audio_path)
+        # Transcribe with Whisper - directly from the video file
+        # Whisper can handle both audio and video files
+        result = model.transcribe(file_path)
         
         # Create a segments array with timestamps
         segments = []
@@ -412,7 +364,7 @@ def transcribe_audio(audio_path):
     
     except Exception as e:
         log_message(f"Transcription error: {str(e)}")
-        raise Exception(f"Failed to transcribe audio: {str(e)}")
+        raise Exception(f"Failed to transcribe file: {str(e)}")
 
 # Root route handler
 @app.route('/', methods=['GET'])
@@ -422,7 +374,8 @@ def root():
         'message': 'TikTok Transcription API is running',
         'endpoints': {
             '/api/transcribe': 'POST - Transcribe TikTok video from URL',
-            '/status': 'GET - Check service status'
+            '/status': 'GET - Check service status',
+            '/healthz': 'GET - Simple health check'
         }
     })
 
@@ -433,61 +386,63 @@ def transcribe_tiktok():
     if not request.is_json:
         return jsonify({'success': False, 'error': 'Request must be in JSON format'}), 400
     
-    data = request.get_json()
-    
-    if not data.get('url'):
-        return jsonify({'success': False, 'error': 'TikTok URL is required'}), 400
-    
-    tiktok_url = data['url'].strip()
-    url_hash = hashlib.md5(tiktok_url.encode()).hexdigest()
-    
-    # Check for cached result
-    cached_result = get_from_cache(transcript_cache, url_hash)
-    if cached_result:
-        return jsonify(cached_result)
-    
     try:
-        # 1. Download the TikTok video
-        video_info = download_tiktok_video(tiktok_url)
-        video_path = video_info['file_path']
+        data = request.get_json()
         
-        # 2. Extract audio from video
-        audio_path = extract_audio(video_path)
+        if not data or not data.get('url'):
+            return jsonify({'success': False, 'error': 'TikTok URL is required'}), 400
         
-        # 3. Transcribe audio
-        transcription = transcribe_audio(audio_path)
+        tiktok_url = data['url'].strip()
+        url_hash = hashlib.md5(tiktok_url.encode()).hexdigest()
         
-        # 4. Create result
-        result = {
-            'success': True,
-            'transcription': transcription['text'],
-            'segments': transcription['segments'],
-            'language': transcription['language'],
-            'author': video_info['author'],
-            'title': video_info['desc'],
-            'video_id': video_info['video_id'],
-            'cached': False
-        }
+        # Check for cached result
+        cached_result = get_from_cache(transcript_cache, url_hash)
+        if cached_result:
+            return jsonify(cached_result)
         
-        # 5. Add to cache
-        set_in_cache(transcript_cache, url_hash, result)
-        
-        # 6. Clean up files (keep for cache period)
-        # We'll keep the video file for the cache period
-        video_info['file_path'] = video_path
-        set_in_cache(video_cache, url_hash, video_info)
-        
-        # Clean up audio file as it's no longer needed
         try:
-            os.remove(audio_path)
-        except Exception as e:
-            log_message(f"Warning: Could not delete audio file: {str(e)}")
+            # 1. Download the TikTok video
+            log_message(f"Starting download for URL: {tiktok_url}")
+            video_info = download_tiktok_video(tiktok_url)
+            video_path = video_info['file_path']
+            log_message(f"Download complete: {video_path}")
+            
+            # 2. Transcribe directly from the video file
+            # We skip the audio extraction step that used to use FFmpeg
+            log_message("Starting transcription")
+            transcription = transcribe_audio_file(video_path)
+            log_message("Transcription complete")
+            
+            # 3. Create result
+            result = {
+                'success': True,
+                'transcription': transcription['text'],
+                'segments': transcription['segments'],
+                'language': transcription['language'],
+                'author': video_info['author'],
+                'title': video_info['desc'],
+                'video_id': video_info['video_id'],
+                'cached': False
+            }
+            
+            # 4. Add to cache
+            set_in_cache(transcript_cache, url_hash, result)
+            
+            # 5. Keep the video file for the cache period
+            video_info['file_path'] = video_path
+            set_in_cache(video_cache, url_hash, video_info)
+            
+            return jsonify(result)
         
-        return jsonify(result)
+        except Exception as e:
+            log_message(f"Error processing TikTok transcription: {str(e)}")
+            import traceback
+            error_details = f"{str(e)}\n{traceback.format_exc()}"
+            return jsonify({'success': False, 'error': str(e)}), 500
     
     except Exception as e:
-        log_message(f"Error processing TikTok transcription: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        log_message(f"Unexpected error in request handling: {str(e)}")
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
 
 @app.route('/status', methods=['GET'])
 def status():
@@ -498,11 +453,18 @@ def status():
     
     return jsonify({
         'status': 'running',
-        'ffmpeg_version': get_ffmpeg_version(),
         'whisper_model': 'tiny',
         'video_cache_count': video_cache_count,
         'transcript_cache_count': transcript_cache_count,
         'cache_expiry_seconds': CACHE_EXPIRY
+    })
+
+@app.route('/healthz', methods=['GET'])
+def health_check():
+    """Simple health check endpoint"""
+    return jsonify({
+        'status': 'ok',
+        'message': 'Service is healthy'
     })
 
 @app.route('/clear-cache', methods=['POST'])
@@ -546,7 +508,7 @@ def transcribe_file():
     temp_file.close()
     
     try:
-        # Transcribe the audio file using Whisper
+        # Transcribe the file using Whisper
         result = model.transcribe(temp_file.name)
         
         # Create segments array
@@ -590,4 +552,5 @@ if __name__ == '__main__':
     print("  - POST /api/transcribe - Transcribe TikTok video from URL")
     print("  - POST /api/transcribe-file - Transcribe uploaded audio file")
     print("  - GET /status - Check service status")
+    print("  - GET /healthz - Simple health check")
     app.run(host='0.0.0.0', port=port, debug=False)
