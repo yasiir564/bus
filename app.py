@@ -8,10 +8,16 @@ import requests
 import uuid
 import threading
 import tempfile
+import gc
+import resource
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from functools import wraps, lru_cache
 import whisper
+
+# Set resource limits
+# Limit virtual memory to 1.5GB (adjust as needed for your server)
+resource.setrlimit(resource.RLIMIT_AS, (1.5 * 1024 * 1024 * 1024, -1))
 
 app = Flask(__name__)
 # Configure CORS to allow requests from specific origins
@@ -20,29 +26,38 @@ CORS(app, resources={r"/*": {"origins": ["https://g-bus.vercel.app", "http://loc
 # Configuration
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(CURRENT_DIR, "downloads/")
-OUTPUT_DIR = os.path.join(CURRENT_DIR, "audio/")
+CACHE_DIR = os.path.join(CURRENT_DIR, "cache/")
 CACHE_EXPIRY = 86400  # 24 hours (in seconds)
-MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB max file size
+MAX_FILE_SIZE = 50 * 1024 * 1024  # Reduced to 50MB max file size
+MAX_REQUEST_QUEUE = 3  # Maximum number of concurrent processing requests
+REQUEST_TIMEOUT = 60  # Timeout for external API requests in seconds
+WHISPER_MODEL_SIZE = "tiny"  # Use smallest model for memory efficiency
 
 # Create directories if they don't exist
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('tiktok_transcriber')
 
-# Cache storage
-video_cache = {}  # For TikTok video info
-transcript_cache = {}  # For transcriptions
-cache_lock = threading.Lock()
+# Request queue with semaphore for concurrency control
+request_semaphore = threading.Semaphore(MAX_REQUEST_QUEUE)
 
-# Load Whisper model - using a smaller model for faster performance on Render
-# Options: "tiny", "base", "small", "medium", "large"
-logger.info("Loading Whisper model...")
-model = whisper.load_model("tiny")
-logger.info("Whisper model loaded")
+# Whisper model loading - only when needed, not at startup
+whisper_model = None
+model_lock = threading.Lock()
+
+def get_whisper_model():
+    """Lazy loading of Whisper model to save memory"""
+    global whisper_model
+    with model_lock:
+        if whisper_model is None:
+            logger.info(f"Loading Whisper {WHISPER_MODEL_SIZE} model...")
+            whisper_model = whisper.load_model(WHISPER_MODEL_SIZE)
+            logger.info("Whisper model loaded")
+    return whisper_model
 
 # Helper function for logging
 def log_message(message):
@@ -51,22 +66,49 @@ def log_message(message):
     else:
         logger.info(message)
 
-# Cache functions for TikTok videos
-def get_from_cache(cache_dict, key):
-    with cache_lock:
-        if key in cache_dict and cache_dict[key]['expires'] > time.time():
-            log_message(f'Cache hit for key: {key}')
-            return cache_dict[key]['data']
+# Disk-based caching functions
+def get_cache_filename(key):
+    """Generate a filename for the cache entry"""
+    return os.path.join(CACHE_DIR, f"{key}.json")
+
+def get_from_cache(key):
+    """Get data from disk cache"""
+    cache_file = get_cache_filename(key)
+    
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                cache_entry = json.load(f)
+                
+            if cache_entry.get('expires', 0) > time.time():
+                log_message(f'Cache hit for key: {key}')
+                return cache_entry.get('data')
+            else:
+                # Clean up expired cache entry
+                try:
+                    os.remove(cache_file)
+                except:
+                    pass
+        except Exception as e:
+            log_message(f"Error reading cache: {str(e)}")
+    
     return None
 
-def set_in_cache(cache_dict, key, data, expiration=CACHE_EXPIRY):
-    with cache_lock:
-        cache_dict[key] = {
-            'data': data,
-            'expires': time.time() + expiration
-        }
-    log_message(f'Cache set for key: {key}')
-    return True
+def set_in_cache(key, data, expiration=CACHE_EXPIRY):
+    """Store data in disk cache"""
+    cache_file = get_cache_filename(key)
+    
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump({
+                'data': data,
+                'expires': time.time() + expiration
+            }, f)
+        log_message(f'Cache set for key: {key}')
+        return True
+    except Exception as e:
+        log_message(f"Error writing cache: {str(e)}")
+        return False
 
 # Extract TikTok video ID from URL
 def extract_tiktok_id(url):
@@ -100,9 +142,12 @@ def follow_tiktok_redirects(url):
     log_message(f'Following redirects for: {url}')
     
     try:
-        response = requests.head(url, allow_redirects=True, 
-                               headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
-                               timeout=10)
+        response = requests.head(
+            url, 
+            allow_redirects=True, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
+            timeout=REQUEST_TIMEOUT
+        )
         final_url = response.url
         log_message(f'Redirect resolved to: {final_url}')
         return final_url
@@ -121,12 +166,12 @@ def fetch_from_tikwm(url):
             api_url,
             data={
                 'url': url,
-                'hd': 1
+                'hd': 0  # Use lower quality to save bandwidth
             },
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             },
-            timeout=30
+            timeout=REQUEST_TIMEOUT
         )
         
         if response.status_code != 200:
@@ -170,7 +215,7 @@ def fetch_from_ssstik(url):
             headers={
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             },
-            timeout=30
+            timeout=REQUEST_TIMEOUT
         )
         
         if response.status_code != 200:
@@ -204,7 +249,7 @@ def fetch_from_ssstik(url):
                 'Referer': 'https://ssstik.io/en',
                 'X-Requested-With': 'XMLHttpRequest'
             },
-            timeout=30
+            timeout=REQUEST_TIMEOUT
         )
         
         if response.status_code != 200:
@@ -260,43 +305,61 @@ def sanitize_filename(name):
 def generate_unique_filename(original_name):
     """Generate a unique filename based on the original name"""
     filename, extension = os.path.splitext(original_name)
-    unique_id = uuid.uuid4().hex[:10]
+    unique_id = uuid.uuid4().hex[:8]
     return f"{sanitize_filename(filename)}_{unique_id}{extension}"
 
-def cleanup_expired_files():
-    """Remove files that haven't been accessed for CACHE_EXPIRY seconds"""
-    current_time = time.time()
-    with cache_lock:
-        # Clean video cache
-        expired_keys = [k for k, v in video_cache.items() if current_time > v["expires"]]
-        for key in expired_keys:
-            if 'file_path' in video_cache[key]['data']:
+def cleanup_files(older_than=3600):
+    """Clean up files older than the specified time"""
+    now = time.time()
+    try:
+        # Clean uploads directory
+        for filename in os.listdir(UPLOAD_DIR):
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            if os.path.isfile(file_path) and now - os.path.getmtime(file_path) > older_than:
                 try:
-                    file_path = video_cache[key]['data']['file_path']
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                        logger.info(f"Removed expired video file: {file_path}")
+                    os.remove(file_path)
+                    logger.info(f"Removed old file: {file_path}")
                 except Exception as e:
                     logger.error(f"Error removing file {file_path}: {str(e)}")
-            del video_cache[key]
         
-        # Clean transcript cache
-        expired_keys = [k for k, v in transcript_cache.items() if current_time > v["expires"]]
-        for key in expired_keys:
-            del transcript_cache[key]
+        # Clean expired cache entries
+        for filename in os.listdir(CACHE_DIR):
+            if not filename.endswith('.json'):
+                continue
+                
+            file_path = os.path.join(CACHE_DIR, filename)
+            if os.path.isfile(file_path):
+                try:
+                    with open(file_path, 'r') as f:
+                        cache_entry = json.load(f)
+                    
+                    if cache_entry.get('expires', 0) < now:
+                        os.remove(file_path)
+                        logger.info(f"Removed expired cache: {file_path}")
+                except Exception as e:
+                    # If we can't read it, it's probably corrupt
+                    try:
+                        os.remove(file_path)
+                        logger.info(f"Removed corrupt cache: {file_path}")
+                    except:
+                        pass
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}")
 
 def start_cleanup_thread():
     """Start a background thread to periodically clean up expired files"""
     def cleanup_task():
         while True:
-            cleanup_expired_files()
+            cleanup_files()
+            # Force garbage collection to free memory
+            gc.collect()
             time.sleep(300)  # Run every 5 minutes
 
     cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
     cleanup_thread.start()
 
 def download_tiktok_video(url):
-    """Download a TikTok video and return the local file path"""
+    """Download a TikTok video and return the local file path with streaming"""
     # Normalize URL for short links
     if 'vm.tiktok.com' in url or 'vt.tiktok.com' in url or len(url.split('/')[3:]) < 2:
         url = follow_tiktok_redirects(url)
@@ -312,38 +375,69 @@ def download_tiktok_video(url):
     video_url = result['video_url']
     author = result['author']
     
-    # Generate a nice filename based on the author and a unique ID
+    # Generate a filename based on the author and a unique ID
     filename = f"{sanitize_filename(author)}_{uuid.uuid4().hex[:8]}.mp4"
     file_path = os.path.join(UPLOAD_DIR, filename)
     
-    # Download the video
-    log_message(f"Downloading video from {video_url} to {file_path}")
-    response = requests.get(video_url, stream=True, timeout=30)
+    # Download the video with streaming to reduce memory usage
+    log_message(f"Downloading video from {video_url}")
     
-    if response.status_code != 200:
-        raise Exception(f"Failed to download video: HTTP {response.status_code}")
-    
-    with open(file_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-    
-    return {
-        'file_path': file_path,
-        'author': author,
-        'desc': result['desc'],
-        'video_id': result['video_id'],
-        'filename': filename
-    }
+    total_size = 0
+    try:
+        with requests.get(video_url, stream=True, timeout=REQUEST_TIMEOUT) as response:
+            if response.status_code != 200:
+                raise Exception(f"Failed to download video: HTTP {response.status_code}")
+            
+            # Check content length if available
+            content_length = response.headers.get('Content-Length')
+            if content_length and int(content_length) > MAX_FILE_SIZE:
+                raise Exception(f"Video file too large: {int(content_length) // (1024*1024)}MB (max: {MAX_FILE_SIZE // (1024*1024)}MB)")
+            
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        size = len(chunk)
+                        total_size += size
+                        if total_size > MAX_FILE_SIZE:
+                            # Close and delete the partial file
+                            f.close()
+                            os.remove(file_path)
+                            raise Exception(f"Video file too large: >{MAX_FILE_SIZE // (1024*1024)}MB")
+                        f.write(chunk)
+        
+        return {
+            'file_path': file_path,
+            'author': author,
+            'desc': result['desc'],
+            'video_id': result['video_id'],
+            'filename': filename,
+            'size': total_size
+        }
+    except Exception as e:
+        # Clean up partial file if download failed
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except:
+                pass
+        raise e
 
 def transcribe_audio_file(file_path):
     """Transcribe audio using Whisper directly from a video file"""
     log_message(f"Transcribing directly from file: {file_path}")
     
     try:
-        # Transcribe with Whisper - directly from the video file
-        # Whisper can handle both audio and video files
-        result = model.transcribe(file_path)
+        # Get model instance
+        model = get_whisper_model()
+        
+        # Use memory-optimized options
+        result = model.transcribe(
+            file_path,
+            # Use fp16 precision for memory efficiency
+            fp16=False,  
+            # Disable language detection to save memory
+            language="en"
+        )
         
         # Create a segments array with timestamps
         segments = []
@@ -354,19 +448,20 @@ def transcribe_audio_file(file_path):
                 "text": segment.get("text", "")
             })
         
-        transcription = {
+        return {
             "text": result["text"],
             "segments": segments,
-            "language": result.get("language", "")
+            "language": result.get("language", "en")
         }
-        
-        return transcription
     
     except Exception as e:
         log_message(f"Transcription error: {str(e)}")
         raise Exception(f"Failed to transcribe file: {str(e)}")
+    finally:
+        # Force garbage collection after transcription
+        gc.collect()
 
-# Root route handler
+# Routes
 @app.route('/', methods=['GET'])
 def root():
     return jsonify({
@@ -379,14 +474,20 @@ def root():
         }
     })
 
-# Routes
 @app.route('/api/transcribe', methods=['POST'])
 def transcribe_tiktok():
     """Endpoint that takes a TikTok URL and returns a transcription"""
-    if not request.is_json:
-        return jsonify({'success': False, 'error': 'Request must be in JSON format'}), 400
+    # Check if we've reached the maximum number of concurrent requests
+    if not request_semaphore.acquire(blocking=False):
+        return jsonify({
+            'success': False, 
+            'error': 'Server is busy. Please try again later.'
+        }), 429
     
     try:
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'Request must be in JSON format'}), 400
+        
         data = request.get_json()
         
         if not data or not data.get('url'):
@@ -396,8 +497,9 @@ def transcribe_tiktok():
         url_hash = hashlib.md5(tiktok_url.encode()).hexdigest()
         
         # Check for cached result
-        cached_result = get_from_cache(transcript_cache, url_hash)
+        cached_result = get_from_cache(url_hash)
         if cached_result:
+            cached_result['cached'] = True
             return jsonify(cached_result)
         
         try:
@@ -408,7 +510,6 @@ def transcribe_tiktok():
             log_message(f"Download complete: {video_path}")
             
             # 2. Transcribe directly from the video file
-            # We skip the audio extraction step that used to use FFmpeg
             log_message("Starting transcription")
             transcription = transcribe_audio_file(video_path)
             log_message("Transcription complete")
@@ -426,37 +527,60 @@ def transcribe_tiktok():
             }
             
             # 4. Add to cache
-            set_in_cache(transcript_cache, url_hash, result)
+            set_in_cache(url_hash, result)
             
-            # 5. Keep the video file for the cache period
-            video_info['file_path'] = video_path
-            set_in_cache(video_cache, url_hash, video_info)
+            # 5. Clean up video file
+            try:
+                os.remove(video_path)
+                log_message(f"Removed video file: {video_path}")
+            except Exception as e:
+                log_message(f"Warning: Could not delete video file: {str(e)}")
             
             return jsonify(result)
         
         except Exception as e:
             log_message(f"Error processing TikTok transcription: {str(e)}")
-            import traceback
-            error_details = f"{str(e)}\n{traceback.format_exc()}"
             return jsonify({'success': False, 'error': str(e)}), 500
     
     except Exception as e:
         log_message(f"Unexpected error in request handling: {str(e)}")
         return jsonify({'success': False, 'error': 'Internal server error'}), 500
+    
+    finally:
+        # Release the semaphore to allow another request
+        request_semaphore.release()
+        # Force garbage collection
+        gc.collect()
 
 @app.route('/status', methods=['GET'])
 def status():
     """Status endpoint for health checks"""
-    with cache_lock:
-        video_cache_count = len(video_cache)
-        transcript_cache_count = len(transcript_cache)
+    # Get free memory info
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        mem_info = {
+            'total': mem.total / (1024 * 1024),
+            'available': mem.available / (1024 * 1024),
+            'percent': mem.percent
+        }
+    except:
+        mem_info = {'error': 'psutil not available'}
+    
+    # Count cache files
+    try:
+        cache_count = len([f for f in os.listdir(CACHE_DIR) if f.endswith('.json')])
+    except:
+        cache_count = -1
     
     return jsonify({
         'status': 'running',
-        'whisper_model': 'tiny',
-        'video_cache_count': video_cache_count,
-        'transcript_cache_count': transcript_cache_count,
-        'cache_expiry_seconds': CACHE_EXPIRY
+        'whisper_model': WHISPER_MODEL_SIZE,
+        'model_loaded': whisper_model is not None,
+        'memory': mem_info,
+        'cache_count': cache_count,
+        'available_threads': request_semaphore._value,
+        'max_concurrency': MAX_REQUEST_QUEUE
     })
 
 @app.route('/healthz', methods=['GET'])
@@ -471,74 +595,96 @@ def health_check():
 def clear_cache():
     """Admin endpoint to manually clear all caches"""
     try:
-        with cache_lock:
-            global video_cache, transcript_cache
-            
-            # Remove video files
-            for key, data in video_cache.items():
+        # Clean up all files
+        for filename in os.listdir(CACHE_DIR):
+            file_path = os.path.join(CACHE_DIR, filename)
+            if os.path.isfile(file_path):
                 try:
-                    file_path = data['data'].get('file_path')
-                    if file_path and os.path.exists(file_path):
-                        os.remove(file_path)
+                    os.remove(file_path)
                 except Exception as e:
-                    log_message(f"Error removing file: {str(e)}")
-            
-            video_cache = {}
-            transcript_cache = {}
+                    log_message(f"Error removing cache file: {str(e)}")
+        
+        # Clean up all downloads
+        for filename in os.listdir(UPLOAD_DIR):
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            if os.path.isfile(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    log_message(f"Error removing download file: {str(e)}")
+        
+        # Force garbage collection
+        gc.collect()
         
         return jsonify({'success': True, 'message': 'All caches cleared successfully'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# Manual transcription endpoint (file upload fallback)
 @app.route('/api/transcribe-file', methods=['POST'])
 def transcribe_file():
     """Endpoint that takes an audio file and returns a transcription"""
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-    
-    # Create a temporary file to save the uploaded file
-    temp_file = tempfile.NamedTemporaryFile(delete=False)
-    file.save(temp_file.name)
-    temp_file.close()
+    # Check if we've reached the maximum number of concurrent requests
+    if not request_semaphore.acquire(blocking=False):
+        return jsonify({
+            'success': False, 
+            'error': 'Server is busy. Please try again later.'
+        }), 429
     
     try:
-        # Transcribe the file using Whisper
-        result = model.transcribe(temp_file.name)
+        if 'file' not in request.files:
+            return jsonify({"error": "No file part"}), 400
         
-        # Create segments array
-        segments = []
-        for segment in result.get("segments", []):
-            segments.append({
-                "start": segment.get("start", 0),
-                "end": segment.get("end", 0),
-                "text": segment.get("text", "")
+        file = request.files['file']
+        
+        if file.filename == '':
+            return jsonify({"error": "No selected file"}), 400
+        
+        # Check file size before saving
+        content = file.read(MAX_FILE_SIZE + 1)
+        if len(content) > MAX_FILE_SIZE:
+            return jsonify({
+                "success": False,
+                "error": f"File too large. Maximum size is {MAX_FILE_SIZE/(1024*1024)}MB"
+            }), 413
+        
+        # Create a temporary file and write the content
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        temp_file.write(content)
+        temp_file.close()
+        
+        try:
+            # Transcribe with Whisper
+            transcription = transcribe_audio_file(temp_file.name)
+            
+            # Clean up the temporary file
+            os.unlink(temp_file.name)
+            
+            return jsonify({
+                "success": True,
+                "transcription": transcription["text"],
+                "segments": transcription["segments"],
+                "language": transcription["language"]
             })
         
-        # Clean up the temporary file
-        os.unlink(temp_file.name)
-        
-        return jsonify({
-            "success": True,
-            "transcription": result["text"],
-            "segments": segments,
-            "language": result.get("language", "")
-        })
+        except Exception as e:
+            # Clean up the temporary file in case of error
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+            
+            return jsonify({
+                "success": False,
+                "error": str(e)
+            }), 500
     
     except Exception as e:
-        # Clean up the temporary file in case of error
-        if os.path.exists(temp_file.name):
-            os.unlink(temp_file.name)
-        
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        log_message(f"Error in file upload handler: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    
+    finally:
+        # Release the semaphore to allow another request
+        request_semaphore.release()
+        # Force garbage collection
+        gc.collect()
 
 if __name__ == '__main__':
     # Start the cleanup thread
@@ -553,4 +699,12 @@ if __name__ == '__main__':
     print("  - POST /api/transcribe-file - Transcribe uploaded audio file")
     print("  - GET /status - Check service status")
     print("  - GET /healthz - Simple health check")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    
+    # Memory-friendly server settings
+    app.run(
+        host='0.0.0.0', 
+        port=port, 
+        debug=False,
+        threaded=True,
+        processes=1  # Single process to avoid memory duplication
+    )
