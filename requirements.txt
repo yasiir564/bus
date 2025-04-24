@@ -1,6 +1,6 @@
-torch
-openai-whisper
-flask
-tqdm
-gunicorn
-flask_cors
+flask==2.3.3
+flask-cors==4.0.0
+requests==2.31.0
+openai-whisper==20231117
+torch==2.1.0
+numpy==1.26.0
