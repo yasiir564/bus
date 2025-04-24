@@ -1,260 +1,593 @@
 import os
-import argparse
-import tempfile
-import subprocess
-from pathlib import Path
-import torch
-import whisper
-from tqdm import tqdm
-from flask import Flask, request, jsonify, send_from_directory
+import re
+import json
+import time
 import logging
-from werkzeug.utils import secure_filename
-from flask_cors import CORS  # Import Flask-CORS
+import hashlib
+import requests
+import subprocess
+import uuid
+import threading
+import tempfile
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+from functools import wraps, lru_cache
+import whisper
 
 app = Flask(__name__)
-# Configure CORS to allow file:// origin - this will attempt to allow your local HTML file
-CORS(app, resources={r"/api/*": {"origins": ["file:///C:/Users/Administrator/Documents", "null"]}})
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+CORS(app)  # Enable CORS for all routes
 
 # Configuration
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'output'
-ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'webm'}
-MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB limit
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(CURRENT_DIR, "downloads/")
+OUTPUT_DIR = os.path.join(CURRENT_DIR, "audio/")
+CACHE_EXPIRY = 86400  # 24 hours (in seconds)
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB max file size
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+# Create directories if they don't exist
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Create necessary directories
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+# Configure logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('tiktok_transcriber')
 
-# Global variable for the Whisper model
-model = None
-model_name = "base"  # Default model, can be changed via API
+# Cache storage
+video_cache = {}  # For TikTok video info
+transcript_cache = {}  # For transcriptions
+cache_lock = threading.Lock()
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+# Load Whisper model - using a smaller model for faster performance on Render
+# Options: "tiny", "base", "small", "medium", "large"
+logger.info("Loading Whisper model...")
+model = whisper.load_model("tiny")
+logger.info("Whisper model loaded")
 
-def load_model(model_size):
-    """Load the Whisper model."""
-    global model, model_name
+# Helper function for logging
+def log_message(message):
+    if isinstance(message, (dict, list, tuple)):
+        logger.info(json.dumps(message))
+    else:
+        logger.info(message)
+
+# Cache functions for TikTok videos
+def get_from_cache(cache_dict, key):
+    with cache_lock:
+        if key in cache_dict and cache_dict[key]['expires'] > time.time():
+            log_message(f'Cache hit for key: {key}')
+            return cache_dict[key]['data']
+    return None
+
+def set_in_cache(cache_dict, key, data, expiration=CACHE_EXPIRY):
+    with cache_lock:
+        cache_dict[key] = {
+            'data': data,
+            'expires': time.time() + expiration
+        }
+    log_message(f'Cache set for key: {key}')
+    return True
+
+# Extract TikTok video ID from URL
+def extract_tiktok_id(url):
+    # Normalize URL
+    normalized_url = url
+    normalized_url = normalized_url.replace('m.tiktok.com', 'www.tiktok.com')
+    normalized_url = normalized_url.replace('vm.tiktok.com', 'www.tiktok.com')
     
-    if model is None or model_name != model_size:
-        logger.info(f"Loading Whisper model: {model_size}")
-        model = whisper.load_model(model_size)
-        model_name = model_size
+    # Regular expressions to match different TikTok URL formats
+    patterns = [
+        r'tiktok\.com\/@[\w\.]+\/video\/(\d+)',  # Standard format
+        r'tiktok\.com\/t\/(\w+)',                # Short URL format
+        r'v[mt]\.tiktok\.com\/(\w+)',            # Very short URL format
+        r'tiktok\.com\/.*[?&]item_id=(\d+)',     # Query parameter format
+    ]
     
-    return model
+    # First try with normalized URL
+    for pattern in patterns:
+        match = re.search(pattern, normalized_url)
+        if match:
+            return match.group(1)
+    
+    # For short URLs - follow redirect
+    if 'vm.tiktok.com' in url or 'vt.tiktok.com' in url or len(url.split('/')[3:]) < 2:
+        return 'follow_redirect'
+    
+    return None
 
-def extract_audio(video_path, audio_path):
-    """Extract audio from video using FFmpeg."""
+# Follow redirects to get final URL
+def follow_tiktok_redirects(url):
+    log_message(f'Following redirects for: {url}')
+    
     try:
-        cmd = [
-            'ffmpeg', '-i', video_path, 
-            '-q:a', '0', '-map', 'a', 
-            '-c:a', 'libmp3lame', audio_path, 
-            '-y'  # Overwrite if exists
-        ]
-        subprocess.run(cmd, check=True, stderr=subprocess.PIPE)
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error extracting audio: {e.stderr.decode() if e.stderr else str(e)}")
-        return False
-
-def transcribe_audio(audio_path, model_size="base", language=None):
-    """Transcribe audio using Whisper."""
-    try:
-        model = load_model(model_size)
-        
-        transcribe_options = {}
-        if language:
-            transcribe_options["language"] = language
-        
-        logger.info(f"Transcribing with options: {transcribe_options}")
-        result = model.transcribe(audio_path, **transcribe_options)
-        
-        return result
+        response = requests.head(url, allow_redirects=True, 
+                               headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'},
+                               timeout=10)
+        final_url = response.url
+        log_message(f'Redirect resolved to: {final_url}')
+        return final_url
     except Exception as e:
-        logger.error(f"Error during transcription: {str(e)}")
-        raise
+        log_message(f'Error following redirect: {str(e)}')
+        return url
 
-def format_time(seconds):
-    """Convert seconds to SRT time format."""
-    hours = int(seconds / 3600)
-    minutes = int((seconds % 3600) / 60)
-    secs = seconds % 60
-    millisecs = int((secs - int(secs)) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{int(secs):02d},{millisecs:03d}"
-
-def create_srt(transcription, output_srt):
-    """Create SRT subtitle file from Whisper transcription."""
-    with open(output_srt, 'w', encoding='utf-8') as f:
-        for i, segment in enumerate(transcription['segments'], 1):
-            start_time = format_time(segment['start'])
-            end_time = format_time(segment['end'])
-            text = segment['text'].strip()
-            
-            f.write(f"{i}\n")
-            f.write(f"{start_time} --> {end_time}\n")
-            f.write(f"{text}\n\n")
+# Try to get TikTok video using TikWM API
+def fetch_from_tikwm(url):
+    log_message(f'Trying TikWM API service for: {url}')
     
-    return output_srt
-
-def add_subtitles_to_video(video_path, srt_path, output_path):
-    """Add subtitles to video using FFmpeg."""
-    try:
-        cmd = [
-            'ffmpeg', '-i', video_path, 
-            '-i', srt_path, 
-            '-c:v', 'copy', '-c:a', 'copy',
-            '-c:s', 'mov_text', 
-            '-metadata:s:s:0', 'language=eng',
-            output_path, 
-            '-y'  # Overwrite if exists
-        ]
-        subprocess.run(cmd, check=True, stderr=subprocess.PIPE)
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Error adding subtitles: {e.stderr.decode() if e.stderr else str(e)}")
-        return False
-
-# Add CORS headers to all API endpoints
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-    return response
-
-@app.route('/api/transcribe', methods=['POST', 'OPTIONS'])
-def transcribe_video():
-    """API endpoint to transcribe a video and generate subtitled version."""
-    # Handle preflight OPTIONS request
-    if request.method == 'OPTIONS':
-        return '', 204
-        
-    # Check if the request has the file
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file provided'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-        
-    if not allowed_file(file.filename):
-        return jsonify({'error': f'File type not allowed. Supported formats: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
-    
-    # Get parameters
-    model_size = request.form.get('model', 'base')  # Options: tiny, base, small, medium, large
-    language = request.form.get('language', None)   # Optional language code (e.g., 'en', 'fr')
-    embed_subtitles = request.form.get('embed', 'true').lower() == 'true'
-    
-    # Validate model size
-    valid_models = ['tiny', 'base', 'small', 'medium', 'large']
-    if model_size not in valid_models:
-        return jsonify({'error': f'Invalid model size. Choose from: {", ".join(valid_models)}'}), 400
+    api_url = 'https://www.tikwm.com/api/'
     
     try:
-        # Save uploaded file
-        filename = secure_filename(file.filename)
-        video_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(video_path)
+        response = requests.post(
+            api_url,
+            data={
+                'url': url,
+                'hd': 1
+            },
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
+            timeout=30
+        )
         
-        # Extract audio
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_audio:
-            audio_path = temp_audio.name
+        if response.status_code != 200:
+            log_message(f'Error: TikWM API request failed with status: {response.status_code}')
+            return None
         
-        logger.info(f"Extracting audio from {video_path}")
-        if not extract_audio(video_path, audio_path):
-            return jsonify({'error': 'Failed to extract audio from video'}), 500
+        data = response.json()
         
-        # Transcribe audio
-        logger.info(f"Transcribing audio with model {model_size}")
-        transcription = transcribe_audio(audio_path, model_size, language)
+        if not data.get('data') or data.get('code') != 0:
+            log_message(f'TikWM API returned error: {data}')
+            return None
         
-        # Create SRT file
-        srt_filename = f"{os.path.splitext(filename)[0]}.srt"
-        srt_path = os.path.join(app.config['OUTPUT_FOLDER'], srt_filename)
-        create_srt(transcription, srt_path)
+        video_data = data['data']
         
-        result = {
-            'message': 'Transcription completed',
-            'srt_file': srt_filename,
-            'download_srt': f"/api/download/{srt_filename}"
+        return {
+            'video_url': video_data['play'],
+            'cover_url': video_data['cover'],
+            'author': video_data['author']['unique_id'],
+            'desc': video_data['title'],
+            'video_id': video_data['id'],
+            'likes': video_data.get('digg_count', 0),
+            'comments': video_data.get('comment_count', 0),
+            'shares': video_data.get('share_count', 0),
+            'plays': video_data.get('play_count', 0),
+            'method': 'tikwm'
+        }
+    except Exception as e:
+        log_message(f'Error using TikWM API: {str(e)}')
+        return None
+
+# Try to get TikTok video using SSSTik API
+def fetch_from_ssstik(url):
+    log_message(f'Trying SSSTik API service for: {url}')
+    
+    session = requests.Session()
+    
+    try:
+        # First request to get cookies and token
+        response = session.get(
+            'https://ssstik.io/en',
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            },
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            log_message('Failed to access SSSTik service')
+            return None
+        
+        html = response.text
+        
+        # Extract the tt token
+        tt_match = re.search(r'name="tt"[\s]+value="([^"]+)"', html)
+        if not tt_match:
+            log_message('Failed to extract token from SSSTik')
+            return None
+        
+        tt_token = tt_match.group(1)
+        
+        # Make the API request
+        response = session.post(
+            'https://ssstik.io/abc?url=dl',
+            data={
+                'id': url,
+                'locale': 'en',
+                'tt': tt_token
+            },
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'Origin': 'https://ssstik.io',
+                'Referer': 'https://ssstik.io/en',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            log_message('Failed to get a response from SSSTik API')
+            return None
+        
+        response_text = response.text
+        
+        # Parse the HTML response to extract the download link
+        video_match = re.search(r'<a href="([^"]+)"[^>]+>Download server 1', response_text)
+        if not video_match:
+            log_message('Failed to extract download link from SSSTik response')
+            return None
+        
+        video_url = video_match.group(1).replace('&amp;', '&')
+        
+        # Extract username if available
+        author = 'Unknown'
+        user_match = re.search(r'<div class="maintext">@([^<]+)</div>', response_text)
+        if user_match:
+            author = user_match.group(1)
+        
+        # Extract description/title if available
+        desc = ''
+        desc_match = re.search(r'<p[^>]+class="maintext">([^<]+)</p>', response_text)
+        if desc_match:
+            desc = desc_match.group(1)
+        
+        return {
+            'video_url': video_url,
+            'author': author,
+            'desc': desc,
+            'video_id': hashlib.md5(url.encode()).hexdigest(),
+            'cover_url': '',
+            'likes': 0,
+            'comments': 0,
+            'shares': 0,
+            'plays': 0,
+            'method': 'ssstik'
+        }
+    except Exception as e:
+        log_message(f'Error using SSSTik service: {str(e)}')
+        return None
+
+# Functions for file handling
+def sanitize_filename(name):
+    """Remove any path info and sanitize the file name"""
+    name = os.path.basename(name)
+    name = name.replace(' ', '_')
+    name = re.sub(r'[^A-Za-z0-9_\-\.]', '', name)
+    return name
+
+def generate_unique_filename(original_name):
+    """Generate a unique filename based on the original name"""
+    filename, extension = os.path.splitext(original_name)
+    unique_id = uuid.uuid4().hex[:10]
+    return f"{sanitize_filename(filename)}_{unique_id}{extension}"
+
+@lru_cache(maxsize=10)
+def get_ffmpeg_version():
+    """Cache the FFmpeg version to avoid repeated subprocess calls"""
+    try:
+        process = subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        return process.stdout.split('\n')[0]
+    except Exception as e:
+        return f"FFmpeg version check failed: {str(e)}"
+
+def cleanup_expired_files():
+    """Remove files that haven't been accessed for CACHE_EXPIRY seconds"""
+    current_time = time.time()
+    with cache_lock:
+        # Clean video cache
+        expired_keys = [k for k, v in video_cache.items() if current_time > v["expires"]]
+        for key in expired_keys:
+            if 'file_path' in video_cache[key]['data']:
+                try:
+                    file_path = video_cache[key]['data']['file_path']
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.info(f"Removed expired video file: {file_path}")
+                except Exception as e:
+                    logger.error(f"Error removing file {file_path}: {str(e)}")
+            del video_cache[key]
+        
+        # Clean transcript cache
+        expired_keys = [k for k, v in transcript_cache.items() if current_time > v["expires"]]
+        for key in expired_keys:
+            del transcript_cache[key]
+
+def start_cleanup_thread():
+    """Start a background thread to periodically clean up expired files"""
+    def cleanup_task():
+        while True:
+            cleanup_expired_files()
+            time.sleep(300)  # Run every 5 minutes
+
+    cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+    cleanup_thread.start()
+
+def download_tiktok_video(url):
+    """Download a TikTok video and return the local file path"""
+    # Normalize URL for short links
+    if 'vm.tiktok.com' in url or 'vt.tiktok.com' in url or len(url.split('/')[3:]) < 2:
+        url = follow_tiktok_redirects(url)
+    
+    # Try to get video info
+    result = fetch_from_tikwm(url)
+    if not result:
+        result = fetch_from_ssstik(url)
+    
+    if not result or not result.get('video_url'):
+        raise Exception("Failed to extract video URL from TikTok link")
+    
+    video_url = result['video_url']
+    author = result['author']
+    
+    # Generate a nice filename based on the author and a unique ID
+    filename = f"{sanitize_filename(author)}_{uuid.uuid4().hex[:8]}.mp4"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    # Download the video
+    log_message(f"Downloading video from {video_url} to {file_path}")
+    response = requests.get(video_url, stream=True, timeout=30)
+    
+    if response.status_code != 200:
+        raise Exception(f"Failed to download video: HTTP {response.status_code}")
+    
+    with open(file_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
+    
+    return {
+        'file_path': file_path,
+        'author': author,
+        'desc': result['desc'],
+        'video_id': result['video_id'],
+        'filename': filename
+    }
+
+def extract_audio(video_path):
+    """Extract audio from video file using FFmpeg"""
+    output_filename = f"{os.path.splitext(os.path.basename(video_path))[0]}.wav"
+    output_path = os.path.join(OUTPUT_DIR, output_filename)
+    
+    log_message(f"Extracting audio from {video_path} to {output_path}")
+    
+    ffmpeg_command = [
+        "ffmpeg", 
+        "-i", video_path, 
+        "-vn",  # No video
+        "-ar", "16000",  # Audio sample rate (16kHz for Whisper)
+        "-ac", "1",  # Mono
+        "-c:a", "pcm_s16le",  # PCM 16-bit little-endian format
+        output_path
+    ]
+    
+    process = subprocess.run(
+        ffmpeg_command, 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    
+    # Check if conversion was successful
+    if process.returncode != 0:
+        raise Exception(f"FFmpeg extraction failed: {process.stderr}")
+    
+    # Check if output file exists
+    if not os.path.exists(output_path):
+        raise Exception("Output audio file was not created")
+    
+    return output_path
+
+def transcribe_audio(audio_path):
+    """Transcribe audio using Whisper"""
+    log_message(f"Transcribing audio: {audio_path}")
+    
+    try:
+        # Transcribe with Whisper
+        result = model.transcribe(audio_path)
+        
+        # Create a segments array with timestamps
+        segments = []
+        for segment in result.get("segments", []):
+            segments.append({
+                "start": segment.get("start", 0),
+                "end": segment.get("end", 0),
+                "text": segment.get("text", "")
+            })
+        
+        transcription = {
+            "text": result["text"],
+            "segments": segments,
+            "language": result.get("language", "")
         }
         
-        # Add subtitles to video if requested
-        if embed_subtitles:
-            output_filename = f"{os.path.splitext(filename)[0]}_subtitled{os.path.splitext(filename)[1]}"
-            output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
-            
-            logger.info(f"Adding subtitles to video: {output_path}")
-            if add_subtitles_to_video(video_path, srt_path, output_path):
-                result['subtitled_video'] = output_filename
-                result['download_video'] = f"/api/download/{output_filename}"
-            else:
-                result['warning'] = 'Failed to add subtitles to video, but SRT file was created'
-        
-        # Clean up the temporary audio file
-        try:
-            os.unlink(audio_path)
-        except:
-            pass
-            
-        return jsonify(result)
-        
+        return transcription
+    
     except Exception as e:
-        logger.error(f"Error processing video: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        log_message(f"Transcription error: {str(e)}")
+        raise Exception(f"Failed to transcribe audio: {str(e)}")
 
-@app.route('/api/download/<filename>')
-def download_file(filename):
-    """Download generated files."""
-    return send_from_directory(app.config['OUTPUT_FOLDER'], filename, as_attachment=True)
-
-@app.route('/api/models')
-def list_models():
-    """List available Whisper models."""
-    models = {
-        'tiny': 'Fastest, lowest accuracy (39M parameters)',
-        'base': 'Fast with decent accuracy (74M parameters)',
-        'small': 'Balanced speed/accuracy (244M parameters)',
-        'medium': 'More accurate, slower (769M parameters)',
-        'large': 'Most accurate, slowest (1.5B parameters)'
-    }
-    return jsonify(models)
-
-@app.route('/')
-def index():
-    """Simple status endpoint."""
+# Root route handler
+@app.route('/', methods=['GET'])
+def root():
     return jsonify({
-        'status': 'running',
-        'service': 'Whisper Video Subtitling API',
+        'status': 'running', 
+        'message': 'TikTok Transcription API is running',
         'endpoints': {
-            '/api/transcribe': 'POST - Upload and transcribe a video',
-            '/api/download/<filename>': 'GET - Download a generated file',
-            '/api/models': 'GET - List available Whisper models'
+            '/api/transcribe': 'POST - Transcribe TikTok video from URL',
+            '/status': 'GET - Check service status'
         }
     })
 
+# Routes
+@app.route('/api/transcribe', methods=['POST'])
+def transcribe_tiktok():
+    """Endpoint that takes a TikTok URL and returns a transcription"""
+    if not request.is_json:
+        return jsonify({'success': False, 'error': 'Request must be in JSON format'}), 400
+    
+    data = request.get_json()
+    
+    if not data.get('url'):
+        return jsonify({'success': False, 'error': 'TikTok URL is required'}), 400
+    
+    tiktok_url = data['url'].strip()
+    url_hash = hashlib.md5(tiktok_url.encode()).hexdigest()
+    
+    # Check for cached result
+    cached_result = get_from_cache(transcript_cache, url_hash)
+    if cached_result:
+        return jsonify(cached_result)
+    
+    try:
+        # 1. Download the TikTok video
+        video_info = download_tiktok_video(tiktok_url)
+        video_path = video_info['file_path']
+        
+        # 2. Extract audio from video
+        audio_path = extract_audio(video_path)
+        
+        # 3. Transcribe audio
+        transcription = transcribe_audio(audio_path)
+        
+        # 4. Create result
+        result = {
+            'success': True,
+            'transcription': transcription['text'],
+            'segments': transcription['segments'],
+            'language': transcription['language'],
+            'author': video_info['author'],
+            'title': video_info['desc'],
+            'video_id': video_info['video_id'],
+            'cached': False
+        }
+        
+        # 5. Add to cache
+        set_in_cache(transcript_cache, url_hash, result)
+        
+        # 6. Clean up files (keep for cache period)
+        # We'll keep the video file for the cache period
+        video_info['file_path'] = video_path
+        set_in_cache(video_cache, url_hash, video_info)
+        
+        # Clean up audio file as it's no longer needed
+        try:
+            os.remove(audio_path)
+        except Exception as e:
+            log_message(f"Warning: Could not delete audio file: {str(e)}")
+        
+        return jsonify(result)
+    
+    except Exception as e:
+        log_message(f"Error processing TikTok transcription: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Status endpoint for health checks"""
+    with cache_lock:
+        video_cache_count = len(video_cache)
+        transcript_cache_count = len(transcript_cache)
+    
+    return jsonify({
+        'status': 'running',
+        'ffmpeg_version': get_ffmpeg_version(),
+        'whisper_model': 'tiny',
+        'video_cache_count': video_cache_count,
+        'transcript_cache_count': transcript_cache_count,
+        'cache_expiry_seconds': CACHE_EXPIRY
+    })
+
+@app.route('/clear-cache', methods=['POST'])
+def clear_cache():
+    """Admin endpoint to manually clear all caches"""
+    try:
+        with cache_lock:
+            global video_cache, transcript_cache
+            
+            # Remove video files
+            for key, data in video_cache.items():
+                try:
+                    file_path = data['data'].get('file_path')
+                    if file_path and os.path.exists(file_path):
+                        os.remove(file_path)
+                except Exception as e:
+                    log_message(f"Error removing file: {str(e)}")
+            
+            video_cache = {}
+            transcript_cache = {}
+        
+        return jsonify({'success': True, 'message': 'All caches cleared successfully'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# Manual transcription endpoint (file upload fallback)
+@app.route('/api/transcribe-file', methods=['POST'])
+def transcribe_file():
+    """Endpoint that takes an audio file and returns a transcription"""
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    
+    # Create a temporary file to save the uploaded file
+    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    file.save(temp_file.name)
+    temp_file.close()
+    
+    try:
+        # Transcribe the audio file using Whisper
+        result = model.transcribe(temp_file.name)
+        
+        # Create segments array
+        segments = []
+        for segment in result.get("segments", []):
+            segments.append({
+                "start": segment.get("start", 0),
+                "end": segment.get("end", 0),
+                "text": segment.get("text", "")
+            })
+        
+        # Clean up the temporary file
+        os.unlink(temp_file.name)
+        
+        return jsonify({
+            "success": True,
+            "transcription": result["text"],
+            "segments": segments,
+            "language": result.get("language", "")
+        })
+    
+    except Exception as e:
+        # Clean up the temporary file in case of error
+        if os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run the Whisper Video Subtitling API')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to run the server on')
-    parser.add_argument('--port', type=int, default=5000, help='Port to run the server on')
-    parser.add_argument('--debug', action='store_true', help='Run in debug mode')
-    parser.add_argument('--preload', type=str, choices=['tiny', 'base', 'small', 'medium', 'large'], 
-                        help='Preload a specific Whisper model on startup')
+    # Start the cleanup thread
+    start_cleanup_thread()
+    logger.info("Started cache cleanup thread")
     
-    args = parser.parse_args()
-    
-    # Preload model if requested
-    if args.preload:
-        logger.info(f"Preloading Whisper model: {args.preload}")
-        load_model(args.preload)
-    
-    # Run the Flask app
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    # Start the Flask app
+    port = int(os.environ.get('PORT', 5000))
+    print(f"Starting TikTok Transcription API on port {port}...")
+    print("Available endpoints:")
+    print("  - POST /api/transcribe - Transcribe TikTok video from URL")
+    print("  - POST /api/transcribe-file - Transcribe uploaded audio file")
+    print("  - GET /status - Check service status")
+    app.run(host='0.0.0.0', port=port, debug=False)
