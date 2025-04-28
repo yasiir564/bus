@@ -12,11 +12,11 @@ from urllib.parse import urlparse
 import subprocess
 import hashlib
 from functools import lru_cache
-import shutil
 import threading
 from datetime import datetime
 from vosk import Model, KaldiRecognizer, SetLogLevel
 import wave
+import gc
 import sys
 
 # Check if ffmpeg is installed
@@ -26,19 +26,20 @@ except (FileNotFoundError, subprocess.CalledProcessError):
     print("Error: ffmpeg is not installed or not in PATH. Please install ffmpeg.")
     exit(1)
 
-# Check if Vosk model exists, if not download it
-VOSK_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vosk-model-en-us-0.22")
+# Configure to use the small Vosk model instead of the larger one
+VOSK_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vosk-model-small-en-us-0.15")
 if not os.path.exists(VOSK_MODEL_PATH):
-    print("Vosk model not found. Downloading model...")
+    print("Small Vosk model not found. Downloading model...")
     try:
         import urllib.request
         import zipfile
         
-        model_url = "https://alphacephei.com/vosk/models/vosk-model-en-us-0.22.zip"
-        zip_path = os.path.join(tempfile.gettempdir(), "vosk-model.zip")
+        # Use the smaller model instead of the 0.22 version
+        model_url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+        zip_path = os.path.join(tempfile.gettempdir(), "vosk-model-small.zip")
         
         # Download the model
-        print("Downloading Vosk model...")
+        print("Downloading small Vosk model...")
         urllib.request.urlretrieve(model_url, zip_path)
         
         # Extract the model
@@ -47,7 +48,7 @@ if not os.path.exists(VOSK_MODEL_PATH):
             zip_ref.extractall(os.path.dirname(os.path.abspath(__file__)))
         
         os.remove(zip_path)
-        print("Vosk model downloaded and extracted successfully.")
+        print("Small Vosk model downloaded and extracted successfully.")
     except Exception as e:
         print(f"Error downloading Vosk model: {e}")
         print("Please download the model manually from https://alphacephei.com/vosk/models")
@@ -57,12 +58,16 @@ app = Flask(__name__)
 # Configure CORS to allow specific origins in production or any in development
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Set up logging
+# Set up logging with rotation to avoid huge log files
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("tiktok_transcriber.log"),
+        logging.handlers.RotatingFileHandler(
+            "tiktok_transcriber.log", 
+            maxBytes=5*1024*1024,  # 5MB
+            backupCount=3
+        ),
         logging.StreamHandler()
     ]
 )
@@ -76,35 +81,29 @@ TEMP_DIR = os.path.join(tempfile.gettempdir(), 'tiktok_transcriber')
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 # Set cache size and expiration time (in seconds)
-CACHE_SIZE = 200
-CACHE_EXPIRATION = 86400  # 24 hours
-MAX_CACHE_SIZE_MB = 5000  # 5GB maximum cache size
+CACHE_SIZE = 100  # Reduced from 200
+CACHE_EXPIRATION = 43200  # 12 hours instead of 24
+MAX_CACHE_SIZE_MB = 1000  # 1GB maximum cache size instead of 5GB
 
 # List of user agents to rotate
 USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/119.0.6045.109 Mobile/15E148 Safari/604.1",
     "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.80 Mobile Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 ]
 
 # List of cookies to rotate
 TT_COOKIES = [
     "tt_webid_v2=123456789012345678; tt_webid=123456789012345678; ttwid=1%7CAbC123dEf456gHi789jKl%7C1600000000%7Cabcdef0123456789abcdef0123456789; msToken=AbC123dEf456gHi789jKl",
-    "tt_webid_v2=234567890123456789; tt_webid=234567890123456789; ttwid=1%7CBcD234eFg567hIj890kLm%7C1600100000%7Cbcdefg1234567890abcdef0123456789; msToken=BcD234eFg567hIj890kLm",
-    "tt_webid_v2=345678901234567890; tt_webid=345678901234567890; ttwid=1%7CCdE345fGh678iJk901lMn%7C1600200000%7Ccdefgh2345678901abcdef0123456789; msToken=CdE345fGh678iJk901lMn",
+    "tt_webid_v2=234567890123456789; tt_webid=234567890123456789; ttwid=1%7CBcD234eFg567hIj890kLm%7C1600100000%7Cbcdefg1234567890abcdef0123456789; msToken=BcD234eFg567hIj890kLm"
 ]
 
 # Proxy configuration (optional)
-# Format: {"http": "http://user:pass@host:port", "https": "http://user:pass@host:port"}
 PROXIES = None
 
 # Download rate limiting
-MAX_DOWNLOADS_PER_MINUTE = 20
+MAX_DOWNLOADS_PER_MINUTE = 10  # Reduced from 20
 download_timestamps = []
 download_lock = threading.Lock()
 
@@ -116,10 +115,14 @@ active_downloads_lock = threading.Lock()
 active_transcriptions = {}
 active_transcriptions_lock = threading.Lock()
 
-# Cache for transcriptions
+# Cache for transcriptions - using a simpler structure to reduce memory
 transcription_cache = {}
 transcription_cache_expiry = {}
 transcription_cache_lock = threading.Lock()
+
+# Create a single shared Vosk model instance instead of loading it every time
+vosk_model = None
+vosk_model_lock = threading.Lock()
 
 class DownloadStats:
     def __init__(self):
@@ -210,7 +213,7 @@ def expand_shortened_url(url):
     """Expand a shortened TikTok URL."""
     try:
         headers = {"User-Agent": get_random_user_agent()}
-        response = requests.head(url, allow_redirects=True, timeout=10, headers=headers)
+        response = requests.head(url, allow_redirects=True, timeout=5, headers=headers)
         return response.url
     except Exception as e:
         logger.error(f"Error expanding shortened URL: {e}")
@@ -222,7 +225,7 @@ def extract_video_id(url):
     if any(domain in url for domain in ["vm.tiktok.com", "vt.tiktok.com"]):
         url = expand_shortened_url(url)
     
-    # Extract video ID from URL
+    # Extract video ID from URL using regex
     patterns = [
         r'/video/(\d+)',
         r'tiktok\.com\/@[\w.-]+/video/(\d+)',
@@ -241,28 +244,40 @@ def get_random_request_headers(referer=None):
     headers = {
         "User-Agent": get_random_user_agent(),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "DNT": "1",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Pragma": "no-cache",
-        "Cache-Control": "no-cache"
     }
     
     if referer:
         headers["Referer"] = referer
-        
+    
     # Add cookies to some requests for better undetectability
     if random.random() < 0.7:  # 70% chance to add cookies
         headers["Cookie"] = get_random_cookies()
     
     return headers
 
-@lru_cache(maxsize=CACHE_SIZE)
+# Optimized download function with smaller LRU cache size
+@lru_cache(maxsize=50)  # Reduced from 200
+def download_tiktok_video(video_id):
+    """Attempt to download TikTok video using the most efficient method first"""
+    methods = [
+        download_tiktok_video_mobile,
+        download_tiktok_video_embed,
+        download_tiktok_video_web,
+        download_tiktok_video_scraper
+    ]
+    
+    for method in methods:
+        try:
+            video_path = method(video_id)
+            if video_path and os.path.exists(video_path) and os.path.getsize(video_path) > 10000:
+                return video_path
+        except Exception as e:
+            logger.error(f"Error in {method.__name__}: {e}")
+    
+    return None
+
+@lru_cache(maxsize=50)  # Reduced cache size
 def download_tiktok_video_mobile(video_id):
     """Download TikTok video using the mobile website."""
     try:
@@ -275,12 +290,11 @@ def download_tiktok_video_mobile(video_id):
         response = requests.get(
             mobile_url, 
             headers=headers, 
-            timeout=20,
+            timeout=10,  # Reduced timeout
             proxies=PROXIES
         )
         
         if response.status_code != 200:
-            logger.error(f"Failed to fetch mobile TikTok page. Status: {response.status_code}")
             return None
         
         # Patterns to extract video URLs
@@ -296,14 +310,11 @@ def download_tiktok_video_mobile(video_id):
         for pattern in video_patterns:
             matches = re.findall(pattern, response.text)
             if matches:
-                # Use the first match
                 video_url = matches[0]
                 video_url = video_url.replace('\\u002F', '/').replace('\\', '')
-                logger.info(f"Found video URL: {video_url[:60]}...")
                 break
         
         if not video_url:
-            logger.error("No video URL found in the page.")
             return None
         
         # Download the video
@@ -317,43 +328,39 @@ def download_tiktok_video_mobile(video_id):
             video_url, 
             headers=video_headers, 
             stream=True, 
-            timeout=30,
+            timeout=15,  # Reduced timeout
             proxies=PROXIES
         )
         
         if video_response.status_code not in [200, 206]:
-            logger.error(f"Failed to download video. Status: {video_response.status_code}")
             return None
         
         # Create a temporary file
         temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp4")
         
-        # Stream the video to the file
+        # Stream the video to the file using smaller chunks
         total_size = 0
         with open(temp_file, 'wb') as f:
-            for chunk in video_response.iter_content(chunk_size=8192):
+            for chunk in video_response.iter_content(chunk_size=4096):  # Smaller chunks
                 if chunk:
                     f.write(chunk)
                     total_size += len(chunk)
         
-        logger.info(f"Downloaded video file size: {total_size} bytes")
-        
-        if total_size < 10000:  # If file is too small, likely an error
-            logger.error(f"Downloaded file is too small: {total_size} bytes")
-            os.remove(temp_file)
+        if total_size < 10000:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
             return None
             
         return temp_file
         
     except Exception as e:
-        logger.error(f"Error downloading video: {e}")
+        logger.error(f"Error downloading video (mobile): {e}")
         return None
 
-@lru_cache(maxsize=CACHE_SIZE)
+@lru_cache(maxsize=25)  # Reduced cache size
 def download_tiktok_video_web(video_id):
     """Alternative method using web API."""
     try:
-        # Build the web URL
         web_url = f"https://www.tiktok.com/api/item/detail/?itemId={video_id}"
         
         headers = get_random_request_headers(referer=f"https://www.tiktok.com/video/{video_id}")
@@ -365,12 +372,11 @@ def download_tiktok_video_web(video_id):
         response = requests.get(
             web_url, 
             headers=headers, 
-            timeout=20,
+            timeout=10,  # Reduced timeout
             proxies=PROXIES
         )
         
         if response.status_code != 200:
-            logger.error(f"Failed to fetch TikTok web API. Status: {response.status_code}")
             return None
         
         try:
@@ -385,7 +391,6 @@ def download_tiktok_video_web(video_id):
                 elif "downloadAddr" in video_data:
                     video_url = video_data["downloadAddr"]
                 else:
-                    logger.error("Could not find video URL in API response")
                     return None
                 
                 # Download the video
@@ -398,42 +403,38 @@ def download_tiktok_video_web(video_id):
                     video_url, 
                     headers=video_headers, 
                     stream=True, 
-                    timeout=30,
+                    timeout=15,
                     proxies=PROXIES
                 )
                 
                 if video_response.status_code != 200:
-                    logger.error(f"Failed to download video from API. Status: {video_response.status_code}")
                     return None
                 
                 # Create a temporary file
                 temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp4")
                 
-                # Stream the video to the file
+                # Stream the video to the file with smaller chunks
                 with open(temp_file, 'wb') as f:
-                    for chunk in video_response.iter_content(chunk_size=8192):
+                    for chunk in video_response.iter_content(chunk_size=4096):
                         if chunk:
                             f.write(chunk)
                 
                 if os.path.getsize(temp_file) < 10000:
-                    logger.error(f"Downloaded file is too small: {os.path.getsize(temp_file)} bytes")
                     os.remove(temp_file)
                     return None
                     
                 return temp_file
             else:
-                logger.error("Unexpected API response structure")
                 return None
                 
         except json.JSONDecodeError:
-            logger.error("Failed to parse API response as JSON")
             return None
             
     except Exception as e:
         logger.error(f"Error in web API method: {e}")
         return None
 
-@lru_cache(maxsize=CACHE_SIZE)
+@lru_cache(maxsize=25)
 def download_tiktok_video_embed(video_id):
     """Try downloading via TikTok's embed functionality."""
     try:
@@ -446,12 +447,11 @@ def download_tiktok_video_embed(video_id):
         response = requests.get(
             embed_url, 
             headers=headers, 
-            timeout=20,
+            timeout=10,  # Reduced timeout
             proxies=PROXIES
         )
         
         if response.status_code != 200:
-            logger.error(f"Failed to fetch TikTok embed page. Status: {response.status_code}")
             return None
         
         # Look for video URL in the embed page
@@ -468,11 +468,9 @@ def download_tiktok_video_embed(video_id):
             if matches:
                 video_url = matches[0]
                 video_url = video_url.replace('\\u002F', '/').replace('\\', '')
-                logger.info(f"Found video URL in embed: {video_url[:60]}...")
                 break
         
         if not video_url:
-            logger.error("No video URL found in the embed page.")
             return None
         
         # Download the video
@@ -485,25 +483,23 @@ def download_tiktok_video_embed(video_id):
             video_url, 
             headers=video_headers, 
             stream=True, 
-            timeout=30,
+            timeout=15,
             proxies=PROXIES
         )
         
         if video_response.status_code != 200:
-            logger.error(f"Failed to download video from embed. Status: {video_response.status_code}")
             return None
         
         # Create a temporary file
         temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp4")
         
-        # Stream the video to the file
+        # Stream the video to the file with smaller chunks
         with open(temp_file, 'wb') as f:
-            for chunk in video_response.iter_content(chunk_size=8192):
+            for chunk in video_response.iter_content(chunk_size=4096):
                 if chunk:
                     f.write(chunk)
         
         if os.path.getsize(temp_file) < 10000:
-            logger.error(f"Downloaded file is too small: {os.path.getsize(temp_file)} bytes")
             os.remove(temp_file)
             return None
             
@@ -513,7 +509,8 @@ def download_tiktok_video_embed(video_id):
         logger.error(f"Error in embed method: {e}")
         return None
 
-@lru_cache(maxsize=CACHE_SIZE)
+# Smallest cache for the most resource-intensive method
+@lru_cache(maxsize=10)
 def download_tiktok_video_scraper(video_id):
     """Try downloading using a more sophisticated approach."""
     try:
@@ -521,27 +518,15 @@ def download_tiktok_video_scraper(video_id):
         url = f"https://www.tiktok.com/@tiktok/video/{video_id}"
         headers = get_random_request_headers()
         
-        # Add specific headers that may help bypass restrictions
-        headers.update({
-            "sec-ch-ua": '"Chromium";v="118", "Google Chrome";v="118"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1"
-        })
-        
         logger.info(f"Fetching TikTok page with scraper method: {url}")
         response = requests.get(
             url, 
             headers=headers, 
-            timeout=30,
+            timeout=15,
             proxies=PROXIES
         )
         
         if response.status_code != 200:
-            logger.error(f"Failed to fetch TikTok page. Status: {response.status_code}")
             return None
             
         # Try to find the video data in the page
@@ -560,20 +545,17 @@ def download_tiktok_video_scraper(video_id):
                         video_url = video_data.get("playAddr") or video_data.get("downloadAddr")
                         
                         if video_url:
-                            logger.info(f"Found video URL via universal data: {video_url[:60]}...")
-                            
                             # Download the video
                             video_headers = get_random_request_headers(referer=url)
                             video_response = requests.get(
                                 video_url, 
                                 headers=video_headers, 
                                 stream=True, 
-                                timeout=30,
+                                timeout=15,
                                 proxies=PROXIES
                             )
                             
                             if video_response.status_code != 200:
-                                logger.error(f"Failed to download video. Status: {video_response.status_code}")
                                 return None
                             
                             # Create a temporary file
@@ -581,18 +563,17 @@ def download_tiktok_video_scraper(video_id):
                             
                             # Stream the video to the file
                             with open(temp_file, 'wb') as f:
-                                for chunk in video_response.iter_content(chunk_size=8192):
+                                for chunk in video_response.iter_content(chunk_size=4096):
                                     if chunk:
                                         f.write(chunk)
                             
                             if os.path.getsize(temp_file) < 10000:
-                                logger.error(f"Downloaded file is too small: {os.path.getsize(temp_file)} bytes")
                                 os.remove(temp_file)
                                 return None
                                 
                             return temp_file
             except json.JSONDecodeError:
-                logger.error("Failed to parse universal data JSON")
+                pass
         
         # If we reached here, try regex method as fallback
         patterns = [
@@ -608,7 +589,6 @@ def download_tiktok_video_scraper(video_id):
             if matches:
                 video_url = matches[0]
                 video_url = video_url.replace('\\u002F', '/').replace('\\', '')
-                logger.info(f"Found video URL via regex: {video_url[:60]}...")
                 
                 # Download the video
                 video_headers = get_random_request_headers(referer=url)
@@ -616,12 +596,11 @@ def download_tiktok_video_scraper(video_id):
                     video_url, 
                     headers=video_headers, 
                     stream=True, 
-                    timeout=30,
+                    timeout=15,
                     proxies=PROXIES
                 )
                 
                 if video_response.status_code != 200:
-                    logger.error(f"Failed to download video. Status: {video_response.status_code}")
                     continue
                 
                 # Create a temporary file
@@ -629,36 +608,40 @@ def download_tiktok_video_scraper(video_id):
                 
                 # Stream the video to the file
                 with open(temp_file, 'wb') as f:
-                    for chunk in video_response.iter_content(chunk_size=8192):
+                    for chunk in video_response.iter_content(chunk_size=4096):
                         if chunk:
                             f.write(chunk)
                 
                 if os.path.getsize(temp_file) < 10000:
-                    logger.error(f"Downloaded file is too small: {os.path.getsize(temp_file)} bytes")
                     os.remove(temp_file)
                     continue
                     
                 return temp_file
         
         return None
+        
     except Exception as e:
         logger.error(f"Error in scraper method: {e}")
         return None
 
 def extract_audio_from_video(video_path, video_id):
-    """Extract audio from video using ffmpeg."""
+    """Extract audio from video using ffmpeg with optimized settings."""
     try:
         audio_path = os.path.join(TEMP_DIR, f"{video_id}.wav")
         
-        # FFmpeg command to extract audio
+        # Optimized FFmpeg command:
+        # - Lower audio quality (8kHz sample rate is sufficient for speech recognition)
+        # - Use mono audio
+        # - Use PCM_S16LE codec which is well supported and efficient
         cmd = [
             'ffmpeg',
-            '-y',  # Overwrite output file without asking
-            '-i', video_path,  # Input file
-            '-vn',  # No video
-            '-ar', '16000',  # Audio sample rate: 16kHz (required by Vosk)
-            '-ac', '1',  # Audio channels: mono
-            '-f', 'wav',  # Force format
+            '-y',
+            '-i', video_path,
+            '-vn',
+            '-ar', '8000',  # Lower sample rate to 8kHz - sufficient for speech recognition and smaller file
+            '-ac', '1',  # Mono audio
+            '-acodec', 'pcm_s16le',  # Simple PCM codec
+            '-f', 'wav',
             audio_path
         ]
         
@@ -675,47 +658,65 @@ def extract_audio_from_video(video_path, video_id):
         logger.error(f"Error extracting audio: {e}")
         return None
 
+def load_vosk_model():
+    """Lazy load the Vosk model once and reuse it."""
+    global vosk_model
+    
+    with vosk_model_lock:
+        if vosk_model is None:
+            logger.info(f"Loading Vosk model from {VOSK_MODEL_PATH}")
+            vosk_model = Model(VOSK_MODEL_PATH)
+    
+    return vosk_model
+
 def transcribe_audio(audio_path, video_id):
-    """Transcribe audio using Vosk API."""
+    """Transcribe audio using Vosk API with memory optimizations."""
     try:
-        # Check if audio file exists
-        if not os.path.exists(audio_path):
-            logger.error(f"Audio file not found: {audio_path}")
+        # Check if audio file exists and is valid
+        if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1000:
+            logger.error(f"Audio file invalid or too small: {audio_path}")
             return None
         
-        # Check if audio file is valid
-        if os.path.getsize(audio_path) < 1000:  # Too small to be valid
-            logger.error(f"Audio file too small: {os.path.getsize(audio_path)} bytes")
-            return None
+        # Load model only once
+        model = load_vosk_model()
         
-        logger.info(f"Loading Vosk model from {VOSK_MODEL_PATH}")
-        model = Model(VOSK_MODEL_PATH)
-        
-        logger.info(f"Opening audio file: {audio_path}")
+        # Open audio file
         wf = wave.open(audio_path, "rb")
         
         if wf.getnchannels() != 1 or wf.getsampwidth() != 2 or wf.getcomptype() != "NONE":
             logger.error("Audio file must be WAV format mono PCM")
+            wf.close()
             return None
         
-        logger.info(f"Creating recognizer with sample rate {wf.getframerate()}")
+        # Create recognizer
         rec = KaldiRecognizer(model, wf.getframerate())
-        rec.SetWords(True)  # Include timestamps
+        rec.SetWords(True)
         
+        # Use smaller chunks for processing to reduce memory usage
         results = []
+        chunk_size = 2000  # Smaller chunk size (was 4000)
+        
         while True:
-            data = wf.readframes(4000)  # Read 4000 frames at a time
+            data = wf.readframes(chunk_size)
             if len(data) == 0:
                 break
+                
             if rec.AcceptWaveform(data):
                 part_result = json.loads(rec.Result())
                 if part_result.get("text", "").strip():
                     results.append(part_result)
+            
+            # Periodically force garbage collection to free memory
+            if random.random() < 0.1:  # 10% chance each chunk
+                gc.collect()
         
         # Get final result
         part_result = json.loads(rec.FinalResult())
         if part_result.get("text", "").strip():
             results.append(part_result)
+        
+        # Close the wave file
+        wf.close()
         
         # Process results to create combined transcript with timestamps
         transcript = []
@@ -723,7 +724,7 @@ def transcribe_audio(audio_path, video_id):
             text = res.get("text", "").strip()
             if text:
                 if "result" in res:
-                   # Get timestamp of first and last word
+                    # Get timestamp of first and last word
                     start_time = res["result"][0]["start"]
                     end_time = res["result"][-1]["end"]
                     transcript.append({
@@ -746,6 +747,9 @@ def transcribe_audio(audio_path, video_id):
         # Combine all text for full transcript
         full_text = " ".join([item["text"] for item in transcript])
         
+        # Force garbage collection after processing
+        gc.collect()
+        
         return {
             "transcript": transcript,
             "full_text": full_text
@@ -753,6 +757,13 @@ def transcribe_audio(audio_path, video_id):
     except Exception as e:
         logger.error(f"Error transcribing audio: {e}")
         return None
+    finally:
+        # Make sure wave file is closed in case of error
+        try:
+            if 'wf' in locals() and wf:
+                wf.close()
+        except:
+            pass
 
 def download_and_transcribe(url):
     """Main function to download and transcribe TikTok video."""
@@ -762,7 +773,7 @@ def download_and_transcribe(url):
         if not video_id:
             return {"error": "Invalid TikTok URL. Could not extract video ID."}, 400
         
-        # Create a unique job ID for this transcription
+        # Create a unique job ID
         job_id = hashlib.md5(f"{video_id}_{time.time()}".encode()).hexdigest()
         
         # Check if transcription is in cache
@@ -786,288 +797,315 @@ def download_and_transcribe(url):
         if not can_perform_download():
             with active_downloads_lock:
                 active_downloads[job_id]["status"] = "rate_limited"
-            return {"job_id": job_id, "status": "rate_limited", "message": "Rate limit exceeded. Try again later."}, 429
+            return {"job_id": job_id, "status": "rate_limited", "message": "Too many requests. Please try again later."}, 429
         
-        # Start download in a separate thread
-        thread = threading.Thread(target=process_download_and_transcribe, args=(url, video_id, job_id))
-        thread.daemon = True
-        thread.start()
+        # Start transcription in separate thread
+        threading.Thread(
+            target=process_transcription_job,
+            args=(job_id, video_id, url),
+            daemon=True
+        ).start()
         
-        return {
-            "job_id": job_id,
-            "status": "processing",
-            "message": "Download and transcription started"
-        }
+        return {"job_id": job_id, "status": "processing", "message": "Processing your request"}, 202
     except Exception as e:
         logger.error(f"Error in download_and_transcribe: {e}")
-        return {"error": str(e)}, 500
+        return {"error": "Server error while processing your request", "details": str(e)}, 500
 
-def process_download_and_transcribe(url, video_id, job_id):
-    """Process download and transcription in background."""
+def process_transcription_job(job_id, video_id, url):
+    """Process the transcription job in a separate thread."""
     try:
         stats.increment_total_downloads()
         
-        logger.info(f"Starting download for video {video_id}")
+        # Update status
+        with active_downloads_lock:
+            if job_id in active_downloads:
+                active_downloads[job_id]["status"] = "downloading"
         
-        # Try different download methods
-        video_path = None
-        methods = [
-            download_tiktok_video_mobile,
-            download_tiktok_video_web,
-            download_tiktok_video_embed,
-            download_tiktok_video_scraper
-        ]
+        # Download the video
+        logger.info(f"Downloading TikTok video: {url}")
+        video_path = download_tiktok_video(video_id)
         
-        for method in methods:
-            if video_path:
-                break
-                
+        if not video_path or not os.path.exists(video_path):
+            logger.error(f"Failed to download video: {url}")
             with active_downloads_lock:
-                active_downloads[job_id]["status"] = f"downloading_method_{methods.index(method) + 1}"
-                
-            video_path = method(video_id)
-            
-            if video_path:
-                logger.info(f"Successfully downloaded video using method {methods.index(method) + 1}")
-                break
-        
-        if not video_path:
-            logger.error(f"All download methods failed for video {video_id}")
-            with active_downloads_lock:
-                active_downloads[job_id]["status"] = "download_failed"
-                active_downloads[job_id]["end_time"] = time.time()
+                if job_id in active_downloads:
+                    active_downloads[job_id]["status"] = "download_failed"
+                    active_downloads[job_id]["end_time"] = time.time()
             stats.increment_failed_downloads()
             return
         
         stats.increment_success_downloads()
         
-        # Extract audio
+        # Update status
         with active_downloads_lock:
-            active_downloads[job_id]["status"] = "extracting_audio"
-            
+            if job_id in active_downloads:
+                active_downloads[job_id]["status"] = "extracting_audio"
+        
+        # Extract audio
+        logger.info(f"Extracting audio from video: {video_path}")
         audio_path = extract_audio_from_video(video_path, video_id)
         
-        if not audio_path:
-            logger.error(f"Failed to extract audio for video {video_id}")
+        if not audio_path or not os.path.exists(audio_path):
+            logger.error("Failed to extract audio")
             with active_downloads_lock:
-                active_downloads[job_id]["status"] = "audio_extraction_failed"
-                active_downloads[job_id]["end_time"] = time.time()
+                if job_id in active_downloads:
+                    active_downloads[job_id]["status"] = "audio_extraction_failed"
+                    active_downloads[job_id]["end_time"] = time.time()
             return
-            
-        # Transcribe audio
+        
+        # Update status
         with active_downloads_lock:
-            active_downloads[job_id]["status"] = "transcribing"
-            
+            if job_id in active_downloads:
+                active_downloads[job_id]["status"] = "transcribing"
+        
         with active_transcriptions_lock:
             active_transcriptions[job_id] = {
                 "video_id": video_id,
-                "status": "processing",
+                "status": "transcribing",
                 "start_time": time.time()
             }
         
         stats.increment_total_transcriptions()
-        transcription_result = transcribe_audio(audio_path, video_id)
         
-        if not transcription_result:
-            logger.error(f"Failed to transcribe audio for video {video_id}")
-            with active_downloads_lock:
-                active_downloads[job_id]["status"] = "transcription_failed"
-                active_downloads[job_id]["end_time"] = time.time()
+        # Transcribe audio
+        logger.info(f"Transcribing audio: {audio_path}")
+        transcript_data = transcribe_audio(audio_path, video_id)
+        
+        if not transcript_data:
+            logger.error("Failed to transcribe audio")
             with active_transcriptions_lock:
-                active_transcriptions[job_id]["status"] = "failed"
-                active_transcriptions[job_id]["end_time"] = time.time()
+                if job_id in active_transcriptions:
+                    active_transcriptions[job_id]["status"] = "transcription_failed"
+                    active_transcriptions[job_id]["end_time"] = time.time()
             stats.increment_failed_transcriptions()
             return
-            
+        
         stats.increment_success_transcriptions()
         
-        # Cache the result
+        # Store result in cache
         with transcription_cache_lock:
-            transcription_cache[video_id] = transcription_result
-            transcription_cache_expiry[video_id] = time.time()
-            
-            # Clean up old cache entries if needed
-            if len(transcription_cache) > CACHE_SIZE:
-                # Remove oldest entries
-                oldest_key = min(transcription_cache_expiry.keys(), key=lambda k: transcription_cache_expiry[k])
+            # Check if cache is too large and remove oldest entries if necessary
+            while len(transcription_cache) > CACHE_SIZE:
+                oldest_key = min(transcription_cache_expiry, key=transcription_cache_expiry.get)
                 del transcription_cache[oldest_key]
                 del transcription_cache_expiry[oldest_key]
+            
+            # Check total cache size in MB
+            cache_size_mb = sum(sys.getsizeof(json.dumps(v)) for v in transcription_cache.values()) / (1024 * 1024)
+            
+            if cache_size_mb > MAX_CACHE_SIZE_MB:
+                # Remove oldest entries until cache is under size limit
+                keys_sorted_by_time = sorted(transcription_cache_expiry, key=transcription_cache_expiry.get)
+                
+                for key in keys_sorted_by_time:
+                    del transcription_cache[key]
+                    del transcription_cache_expiry[key]
+                    
+                    cache_size_mb = sum(sys.getsizeof(json.dumps(v)) for v in transcription_cache.values()) / (1024 * 1024)
+                    if cache_size_mb <= MAX_CACHE_SIZE_MB:
+                        break
+            
+            # Store new result
+            transcription_cache[video_id] = transcript_data
+            transcription_cache_expiry[video_id] = time.time()
         
-        # Update job status
-        with active_downloads_lock:
-            active_downloads[job_id]["status"] = "completed"
-            active_downloads[job_id]["end_time"] = time.time()
-            active_downloads[job_id]["result"] = transcription_result
-            
+        # Update status
         with active_transcriptions_lock:
-            active_transcriptions[job_id]["status"] = "completed"
-            active_transcriptions[job_id]["end_time"] = time.time()
-            active_transcriptions[job_id]["result"] = transcription_result
-            
-        # Clean up files
-        try:
-            if os.path.exists(video_path):
-                os.remove(video_path)
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-        except Exception as e:
-            logger.error(f"Error cleaning up files: {e}")
-            
-    except Exception as e:
-        logger.error(f"Error in process_download_and_transcribe: {e}")
+            if job_id in active_transcriptions:
+                active_transcriptions[job_id]["status"] = "completed"
+                active_transcriptions[job_id]["end_time"] = time.time()
+        
         with active_downloads_lock:
-            active_downloads[job_id]["status"] = "error"
-            active_downloads[job_id]["error"] = str(e)
-            active_downloads[job_id]["end_time"] = time.time()
+            if job_id in active_downloads:
+                active_downloads[job_id]["status"] = "completed"
+                active_downloads[job_id]["end_time"] = time.time()
+        
+        logger.info(f"Successfully transcribed video {video_id}")
+        
+        # Clean up temporary files with some delay to prevent issues
+        threading.Timer(60, cleanup_files, args=[video_path, audio_path]).start()
+        
+    except Exception as e:
+        logger.error(f"Error in process_transcription_job: {e}")
+        with active_downloads_lock:
+            if job_id in active_downloads:
+                active_downloads[job_id]["status"] = "error"
+                active_downloads[job_id]["error"] = str(e)
+                active_downloads[job_id]["end_time"] = time.time()
+        
+        with active_transcriptions_lock:
+            if job_id in active_transcriptions:
+                active_transcriptions[job_id]["status"] = "error"
+                active_transcriptions[job_id]["error"] = str(e)
+                active_transcriptions[job_id]["end_time"] = time.time()
 
-# API Routes
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint."""
-    return jsonify({
-        "status": "ok",
-        "timestamp": time.time(),
-        "cache_size": len(transcription_cache),
-        "stats": stats.get_stats()
-    })
+def cleanup_files(video_path, audio_path):
+    """Clean up temporary files."""
+    try:
+        if video_path and os.path.exists(video_path):
+            os.remove(video_path)
+        
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
+    except Exception as e:
+        logger.error(f"Error cleaning up files: {e}")
 
+def clean_temp_directory():
+    """Clean up old temporary files."""
+    try:
+        current_time = time.time()
+        for filename in os.listdir(TEMP_DIR):
+            filepath = os.path.join(TEMP_DIR, filename)
+            file_mod_time = os.path.getmtime(filepath)
+            
+            # Delete files older than 24 hours
+            if current_time - file_mod_time > 86400:
+                try:
+                    os.remove(filepath)
+                    logger.info(f"Deleted old temporary file: {filepath}")
+                except Exception as e:
+                    logger.error(f"Error deleting temporary file {filepath}: {e}")
+    except Exception as e:
+        logger.error(f"Error cleaning temp directory: {e}")
+
+# Set up API endpoints
 @app.route('/api/transcribe', methods=['POST'])
-def transcribe_endpoint():
+def transcribe_route():
     """Endpoint to transcribe a TikTok video."""
     try:
         data = request.get_json()
         if not data or 'url' not in data:
             return jsonify({"error": "Missing URL parameter"}), 400
-            
-        url = data['url']
         
+        url = data['url']
         if not is_valid_tiktok_url(url):
             return jsonify({"error": "Invalid TikTok URL"}), 400
-            
-        result = download_and_transcribe(url)
-        return jsonify(result)
+        
+        result, status_code = download_and_transcribe(url)
+        return jsonify(result), status_code
     except Exception as e:
-        logger.error(f"Error in transcribe endpoint: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error in transcribe route: {e}")
+        return jsonify({"error": "Server error", "details": str(e)}), 500
 
 @app.route('/api/job/<job_id>', methods=['GET'])
-def get_job_status(job_id):
-    """Get the status of a transcription job."""
+def job_status_route(job_id):
+    """Endpoint to check the status of a transcription job."""
     try:
+        # Check if job is in downloads
         with active_downloads_lock:
             if job_id in active_downloads:
                 job_info = active_downloads[job_id].copy()
                 
-                # Don't return everything for in-progress jobs
-                if job_info.get("status") != "completed":
-                    if "result" in job_info:
-                        del job_info["result"]
+                # Check if job is completed or has transcription data
+                with transcription_cache_lock:
+                    video_id = job_info.get("video_id")
+                    if video_id and video_id in transcription_cache:
+                        job_info["result"] = transcription_cache[video_id]
                 
-                return jsonify({
-                    "job_id": job_id,
-                    "status": job_info.get("status", "unknown"),
-                    "video_id": job_info.get("video_id"),
-                    "start_time": job_info.get("start_time"),
-                    "end_time": job_info.get("end_time", None),
-                    "result": job_info.get("result", None)
-                })
+                return jsonify(job_info), 200
+        
+        # Check if job is in transcriptions
+        with active_transcriptions_lock:
+            if job_id in active_transcriptions:
+                job_info = active_transcriptions[job_id].copy()
+                
+                # Check if job is completed
+                if job_info.get("status") == "completed":
+                    with transcription_cache_lock:
+                        video_id = job_info.get("video_id")
+                        if video_id and video_id in transcription_cache:
+                            job_info["result"] = transcription_cache[video_id]
+                
+                return jsonify(job_info), 200
         
         return jsonify({"error": "Job not found"}), 404
     except Exception as e:
-        logger.error(f"Error in get_job_status: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error in job status route: {e}")
+        return jsonify({"error": "Server error", "details": str(e)}), 500
 
-@app.route('/api/cache/clear', methods=['POST'])
-def clear_cache():
-    """Clear the transcription cache."""
+@app.route('/api/stats', methods=['GET'])
+def stats_route():
+    """Endpoint to get server statistics."""
     try:
+        # Get cache statistics
         with transcription_cache_lock:
-            transcription_cache.clear()
-            transcription_cache_expiry.clear()
-            
-        # Also clean up temp directory
-        for filename in os.listdir(TEMP_DIR):
-            file_path = os.path.join(TEMP_DIR, filename)
-            try:
-                if os.path.isfile(file_path):
-                    os.remove(file_path)
-            except Exception as e:
-                logger.error(f"Error cleaning up file {file_path}: {e}")
-                
-        return jsonify({"status": "success", "message": "Cache cleared"})
+            cache_size = len(transcription_cache)
+            cache_size_mb = sum(sys.getsizeof(json.dumps(v)) for v in transcription_cache.values()) / (1024 * 1024)
+        
+        # Get active jobs
+        with active_downloads_lock:
+            active_download_count = len(active_downloads)
+        
+        with active_transcriptions_lock:
+            active_transcription_count = len(active_transcriptions)
+        
+        # Get memory usage
+        import psutil
+        process = psutil.Process(os.getpid())
+        memory_usage_mb = process.memory_info().rss / (1024 * 1024)
+        
+        # Get server stats
+        server_stats = {
+            "server_time": datetime.now().isoformat(),
+            "uptime": time.time() - process.create_time(),
+            "memory_usage_mb": memory_usage_mb,
+            "cache": {
+                "size": cache_size,
+                "size_mb": cache_size_mb,
+                "max_size": CACHE_SIZE,
+                "max_size_mb": MAX_CACHE_SIZE_MB
+            },
+            "active_jobs": {
+                "downloads": active_download_count,
+                "transcriptions": active_transcription_count
+            }
+        }
+        
+        # Add download and transcription stats
+        server_stats.update(stats.get_stats())
+        
+        return jsonify(server_stats), 200
     except Exception as e:
-        logger.error(f"Error clearing cache: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error in stats route: {e}")
+        return jsonify({"error": "Server error", "details": str(e)}), 500
 
-# Clean up expired cache periodically
-def clean_cache_task():
-    """Clean up expired cache entries periodically."""
-    while True:
-        try:
-            # Sleep first to allow the server to start up
-            time.sleep(3600)  # Run once per hour
-            
-            logger.info("Running cache cleanup task")
-            current_time = time.time()
-            
-            # Clean up transcription cache
-            with transcription_cache_lock:
-                expired_keys = []
-                for key, timestamp in transcription_cache_expiry.items():
-                    if current_time - timestamp > CACHE_EXPIRATION:
-                        expired_keys.append(key)
-                
-                for key in expired_keys:
-                    del transcription_cache[key]
-                    del transcription_cache_expiry[key]
-                    
-                logger.info(f"Removed {len(expired_keys)} expired cache entries")
-            
-            # Clean up temp files
-            for filename in os.listdir(TEMP_DIR):
-                file_path = os.path.join(TEMP_DIR, filename)
-                try:
-                    if os.path.isfile(file_path):
-                        file_mtime = os.path.getmtime(file_path)
-                        if current_time - file_mtime > CACHE_EXPIRATION:
-                            os.remove(file_path)
-                            logger.info(f"Removed expired temporary file: {filename}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up file {file_path}: {e}")
-                    
-            # Check temp directory size
-            total_size = sum(os.path.getsize(os.path.join(TEMP_DIR, f)) for f in os.listdir(TEMP_DIR) if os.path.isfile(os.path.join(TEMP_DIR, f)))
-            if total_size > MAX_CACHE_SIZE_MB * 1024 * 1024:
-                logger.warning(f"Temp directory size exceeds {MAX_CACHE_SIZE_MB}MB, cleaning up")
-                
-                # Get list of files sorted by modification time (oldest first)
-                files = [(os.path.getmtime(os.path.join(TEMP_DIR, f)), f) 
-                         for f in os.listdir(TEMP_DIR) 
-                         if os.path.isfile(os.path.join(TEMP_DIR, f))]
-                files.sort()
-                
-                # Remove files until we're below the limit
-                for mtime, filename in files:
-                    file_path = os.path.join(TEMP_DIR, filename)
-                    try:
-                        file_size = os.path.getsize(file_path)
-                        os.remove(file_path)
-                        total_size -= file_size
-                        logger.info(f"Removed {filename} to free space")
-                        
-                        if total_size < MAX_CACHE_SIZE_MB * 0.8 * 1024 * 1024:  # Aim for 80% of max
-                            break
-                    except Exception as e:
-                        logger.error(f"Error removing file {file_path}: {e}")
-                        
-        except Exception as e:
-            logger.error(f"Error in clean_cache_task: {e}")
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Simple health check endpoint."""
+    return jsonify({"status": "ok"}), 200
 
-# Start cache cleanup task
-cleanup_thread = threading.Thread(target=clean_cache_task)
-cleanup_thread.daemon = True
-cleanup_thread.start()
+# Background task for cleanup
+def start_cleanup_scheduler():
+    """Start a background thread to clean up temporary files periodically."""
+    def cleanup_task():
+        while True:
+            try:
+                clean_temp_directory()
+                time.sleep(3600)  # Run every hour
+            except Exception as e:
+                logger.error(f"Error in cleanup task: {e}")
+                time.sleep(3600)  # Sleep and try again
+    
+    cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+    cleanup_thread.start()
 
+# Initialize cache cleanup job
+start_cleanup_scheduler()
+
+# Main entry point
 if __name__ == '__main__':
-    logger.info("Starting TikTok Transcriber API")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    try:
+        # Import psutil if not already imported
+        import psutil
+    except ImportError:
+        print("Warning: psutil not installed. Memory stats will not be available.")
+        print("Install with: pip install psutil")
+    
+    # Start the server
+    port = int(os.environ.get("PORT", 5000))
+    
+    print(f"Starting TikTok Transcriber API on port {port}")
+    print(f"Using Vosk model: {VOSK_MODEL_PATH}")
+    print(f"Temporary directory: {TEMP_DIR}")
+    
+    app.run(host='0.0.0.0', port=port, threaded=True)
