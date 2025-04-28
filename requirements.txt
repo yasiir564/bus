@@ -1,5 +1,6 @@
 flask
 flask-cors
 requests
-vosk soundfile
+vosk
+soundfile
 numpy
