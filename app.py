@@ -1,7 +1,6 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-import tempfile
 import whisper
 import uuid
 import time
@@ -18,18 +17,35 @@ MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB limit
 # Create temporary upload directory if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Initialize Whisper model (using "base" for lightweight usage)
-# Options: "tiny", "base", "small", "medium", "large"
-model = whisper.load_model("base")
+# Load Whisper model lazily to save memory
+model = None
+
+def get_model():
+    global model
+    if model is None:
+        model = whisper.load_model("base")
+    return model
 
 def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/ping', methods=['GET'])
 def ping():
     """Health check endpoint"""
     return jsonify({"status": "alive", "timestamp": time.time()})
+
+@app.route('/', methods=['GET'])
+def home():
+    """Simple API info"""
+    return jsonify({
+        "name": "Whisper Transcription API",
+        "endpoints": {
+            "/transcribe": "POST - Send file for transcription",
+            "/ping": "GET - Health check"
+        },
+        "file_size_limit": "100MB",
+        "supported_formats": list(ALLOWED_EXTENSIONS)
+    })
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe_video():
@@ -57,51 +73,40 @@ def transcribe_video():
         file.save(file_path)
         
         # Use whisper to transcribe
-        result = model.transcribe(file_path)
+        result = get_model().transcribe(file_path)
         
         # Remove the temporary file after transcription
         os.remove(file_path)
         
-        # Return the transcription
+        # Return only essential transcription data
         return jsonify({
             "transcription": result["text"],
-            "segments": result["segments"]
+            "segments": [
+                {
+                    "id": segment["id"],
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "text": segment["text"]
+                } for segment in result["segments"]
+            ]
         })
     
     except Exception as e:
         # Clean up if error occurs
-        if os.path.exists(file_path):
+        if 'file_path' in locals() and os.path.exists(file_path):
             os.remove(file_path)
         return jsonify({"error": str(e)}), 500
 
-@app.route('/', methods=['GET'])
-def home():
-    """Simple home page with instructions"""
-    return """
-    <html>
-        <head>
-            <title>Whisper Video Transcription API</title>
-            <style>
-                body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-                h1 { color: #333; }
-                code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
-            </style>
-        </head>
-        <body>
-            <h1>Whisper Video Transcription API</h1>
-            <p>This is a simple API for transcribing videos using OpenAI's Whisper model.</p>
-            <h2>How to use:</h2>
-            <p>Send a POST request to <code>/transcribe</code> with a video file in the <code>file</code> field.</p>
-            <h3>Testing with cURL:</h3>
-            <pre>curl -F "file=@your_video.mp4" https://your-app-url.com/transcribe</pre>
-            <h3>File size limit:</h3>
-            <p>Maximum file size: 100MB</p>
-            <h3>Supported file types:</h3>
-            <p>Video: mp4, avi, mov, mkv, webm</p>
-            <p>Audio: mp3, wav, m4a</p>
-        </body>
-    </html>
-    """
+# Cleanup function to run when app is shutting down
+@app.teardown_appcontext
+def cleanup_temp_files(error):
+    # Remove any leftover files in the temp directory
+    if os.path.exists(UPLOAD_FOLDER):
+        for f in os.listdir(UPLOAD_FOLDER):
+            try:
+                os.remove(os.path.join(UPLOAD_FOLDER, f))
+            except:
+                pass
 
 # Start the application if executed directly
 if __name__ == "__main__":
