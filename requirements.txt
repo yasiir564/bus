@@ -1,7 +1,6 @@
-flask
-flask-cors
-requests
-vosk
-soundfile
-numpy
-gunicorn
+flask==2.3.3
+flask-cors==4.0.0
+openai-whisper==20231117
+gunicorn==21.2.0
+werkzeug==2.3.7
+torch==2.0.1
