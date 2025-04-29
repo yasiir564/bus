@@ -4,3 +4,4 @@ openai-whisper==20231117
 gunicorn==21.2.0
 werkzeug==2.3.7
 torch==2.0.1
+numpy
