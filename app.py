@@ -221,6 +221,10 @@ def download_tiktok_video(video_id):
             # Match with h264/h265 specific URLs
             r'"h264PlayAddr":"([^"]+)"',
             r'"h265PlayAddr":"([^"]+)"',
+            # Match video paths specifically
+            r'"definition":"720p","src":"([^"]+)"',
+            r'"definition":"480p","src":"([^"]+)"',
+            r'"definition":"hd","src":"([^"]+)"',
             # Video element sources
             r'<video[^>]+src="([^"]+)"'
         ]
@@ -284,8 +288,8 @@ def download_tiktok_video(video_id):
             except Exception as e:
                 logger.error(f"Error downloading from URL {video_url}: {e}")
         
-        # Method 2: Try additional extraction strategies
-        # Look for data in JSON structures within the page
+        # Method 2: Try additional extraction methods from the page
+        # Try the SIGI_STATE JSON data
         json_pattern = r'<script id="SIGI_STATE" type="application/json">(.*?)</script>'
         json_match = re.search(json_pattern, response.text, re.DOTALL)
         
@@ -300,7 +304,7 @@ def download_tiktok_video(video_id):
                         video_url = video_data["video"].get("playAddr") or video_data["video"].get("downloadAddr")
                         
                         if video_url:
-                            logger.info(f"Found video URL in JSON data: {video_url[:60]}...")
+                            logger.info(f"Found video URL in SIGI_STATE JSON: {video_url[:60]}...")
                             
                             # Download using the same approach as above
                             video_headers = get_random_request_headers(referer=url)
@@ -327,38 +331,80 @@ def download_tiktok_video(video_id):
                                         if os.path.exists(temp_file):
                                             os.remove(temp_file)
                             except Exception as e:
-                                logger.error(f"Error downloading from JSON URL: {e}")
+                                logger.error(f"Error downloading from SIGI_STATE JSON URL: {e}")
             except json.JSONDecodeError:
-                logger.error("Failed to parse JSON data from page")
+                logger.error("Failed to parse SIGI_STATE JSON data from page")
         
-        # Method 3: Use a fallback approach with direct API
-        # This is a more direct approach if the above methods fail
-        try:
-            api_url = f"https://api16-normal-useast5.us.tiktokv.com/aweme/v1/feed/?aweme_id={video_id}"
-            api_headers = get_random_request_headers()
-            api_headers["Accept"] = "application/json"
-            
-            api_response = requests.get(api_url, headers=api_headers, timeout=30)
-            if api_response.status_code == 200:
-                try:
-                    api_data = api_response.json()
-                    
-                    # Extract video URL from API response
-                    if "aweme_list" in api_data and len(api_data["aweme_list"]) > 0:
-                        aweme = api_data["aweme_list"][0]
-                        if "video" in aweme and "play_addr" in aweme["video"]:
-                            video_urls = aweme["video"]["play_addr"].get("url_list", [])
-                            if video_urls:
-                                video_url = video_urls[0]
-                                logger.info(f"Found video URL from API: {video_url[:60]}...")
+        # Method 3: Try UNIVERSAL_DATA_FOR_REHYDRATION
+        universal_data_match = re.search(r'window\["UNIVERSAL_DATA_FOR_REHYDRATION"\]\s*=\s*({.+?});', response.text)
+        if universal_data_match:
+            try:
+                universal_data_str = universal_data_match.group(1)
+                universal_data = json.loads(universal_data_str)
+                
+                # Navigate through the structure to find video URL
+                if "state" in universal_data and "ItemModule" in universal_data["state"]:
+                    item_module = universal_data["state"]["ItemModule"]
+                    if video_id in item_module:
+                        video_data = item_module[video_id]["video"]
+                        video_url = video_data.get("playAddr") or video_data.get("downloadAddr")
+                        
+                        if video_url:
+                            logger.info(f"Found video URL via UNIVERSAL_DATA: {video_url[:60]}...")
+                            
+                            # Download the video
+                            video_headers = get_random_request_headers(referer=url)
+                            video_headers['Accept'] = 'video/mp4,video/*,*/*;q=0.8'
+                            video_response = requests.get(
+                                video_url, 
+                                headers=video_headers, 
+                                stream=True, 
+                                timeout=30,
+                                verify=False
+                            )
+                            
+                            if video_response.status_code == 200:
+                                with open(temp_file, 'wb') as f:
+                                    for chunk in video_response.iter_content(chunk_size=8192):
+                                        if chunk:
+                                            f.write(chunk)
                                 
-                                # Download using the same approach as above
-                                video_headers = get_random_request_headers()
+                                if validate_video_file(temp_file):
+                                    return temp_file
+                                else:
+                                    if os.path.exists(temp_file):
+                                        os.remove(temp_file)
+            except json.JSONDecodeError:
+                logger.error("Failed to parse UNIVERSAL_DATA JSON")
+        
+        # Method 4: Look for media data in a different script tag
+        tt_initial_props = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', response.text, re.DOTALL)
+        if tt_initial_props:
+            try:
+                props_data = json.loads(tt_initial_props.group(1))
+                
+                # Try to extract video URL from props data
+                # Navigate through the nested structure
+                if "props" in props_data and "pageProps" in props_data["props"]:
+                    page_props = props_data["props"]["pageProps"]
+                    if "itemInfo" in page_props and "itemStruct" in page_props["itemInfo"]:
+                        item_struct = page_props["itemInfo"]["itemStruct"]
+                        if "video" in item_struct:
+                            video_data = item_struct["video"]
+                            video_url = video_data.get("playAddr") or video_data.get("downloadAddr")
+                            
+                            if video_url:
+                                logger.info(f"Found video URL in NEXT_DATA: {video_url[:60]}...")
+                                
+                                # Download the video
+                                video_headers = get_random_request_headers(referer=url)
+                                video_headers['Accept'] = 'video/mp4,video/*,*/*;q=0.8'
                                 video_response = requests.get(
                                     video_url, 
                                     headers=video_headers, 
                                     stream=True, 
-                                    timeout=30
+                                    timeout=30,
+                                    verify=False
                                 )
                                 
                                 if video_response.status_code == 200:
@@ -372,13 +418,11 @@ def download_tiktok_video(video_id):
                                     else:
                                         if os.path.exists(temp_file):
                                             os.remove(temp_file)
-                except json.JSONDecodeError:
-                    logger.error("Failed to parse API response JSON")
-        except Exception as e:
-            logger.error(f"Error using API fallback: {e}")
-        
+            except json.JSONDecodeError:
+                logger.error("Failed to parse NEXT_DATA JSON")
+                    
         # If we reached here, we couldn't download the video
-        logger.error(f"All methods failed to download video with ID: {video_id}")
+        logger.error(f"All extraction methods failed to download video with ID: {video_id}")
         return None
         
     except Exception as e:
