@@ -138,7 +138,7 @@ def get_random_request_headers(referer=None):
     """Generate randomized headers for HTTP requests."""
     headers = {
         "User-Agent": get_random_user_agent(),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,video/mp4,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
         "DNT": "1",
         "Connection": "keep-alive",
@@ -151,7 +151,8 @@ def get_random_request_headers(referer=None):
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
         "Pragma": "no-cache",
-        "Cache-Control": "no-cache"
+        "Cache-Control": "no-cache",
+        "Range": "bytes=0-"  # Add Range header to ensure full video content
     }
     
     if referer:
@@ -162,10 +163,33 @@ def get_random_request_headers(referer=None):
     
     return headers
 
+def validate_video_file(file_path):
+    """Check if the downloaded file is a valid MP4 video."""
+    try:
+        file_size = os.path.getsize(file_path)
+        
+        # Check minimum file size (10KB)
+        if file_size < 10240:
+            logger.warning(f"File too small ({file_size} bytes), likely invalid")
+            return False
+            
+        # Check file header for MP4 signature
+        with open(file_path, 'rb') as f:
+            header = f.read(12)
+            # Most MP4 files start with 'ftyp' at byte 4
+            if b'ftyp' not in header:
+                logger.warning(f"File doesn't have MP4 signature: {header}")
+                return False
+                
+        return True
+    except Exception as e:
+        logger.error(f"Error validating video file: {e}")
+        return False
+
 def download_tiktok_video(video_id):
     """Download TikTok video without watermark."""
     try:
-        # Build the direct video URL
+        # Build the TikTok video URL
         url = f"https://www.tiktok.com/@tiktok/video/{video_id}"
         headers = get_random_request_headers()
         
@@ -179,93 +203,184 @@ def download_tiktok_video(video_id):
         if response.status_code != 200:
             logger.error(f"Failed to fetch TikTok page. Status: {response.status_code}")
             return None
+
+        # Create a temporary file path
+        temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp4")
             
-        # Try to find the video data in the page
-        # Method 1: Look for __UNIVERSAL_DATA_FOR_REHYDRATION__ script
-        universal_data_match = re.search(r'window\["UNIVERSAL_DATA_FOR_REHYDRATION"\]\s*=\s*({.+?});', response.text)
-        if universal_data_match:
-            try:
-                universal_data_str = universal_data_match.group(1)
-                universal_data = json.loads(universal_data_str)
-                
-                # Navigate through the structure to find video URL
-                if "state" in universal_data and "ItemModule" in universal_data["state"]:
-                    item_module = universal_data["state"]["ItemModule"]
-                    if video_id in item_module:
-                        video_data = item_module[video_id]["video"]
-                        video_url = video_data.get("playAddr") or video_data.get("downloadAddr")
-                        
-                        if video_url:
-                            logger.info(f"Found video URL via universal data: {video_url[:60]}...")
-                            
-                            # Download the video
-                            video_headers = get_random_request_headers(referer=url)
-                            video_response = requests.get(
-                                video_url, 
-                                headers=video_headers, 
-                                stream=True, 
-                                timeout=30
-                            )
-                            
-                            if video_response.status_code == 200:
-                                # Create a temporary file
-                                temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp4")
-                                
-                                # Stream the video to the file
-                                with open(temp_file, 'wb') as f:
-                                    for chunk in video_response.iter_content(chunk_size=8192):
-                                        if chunk:
-                                            f.write(chunk)
-                                
-                                if os.path.getsize(temp_file) > 10000:  # Ensure file is not too small
-                                    return temp_file
-                                else:
-                                    os.remove(temp_file)
-            except json.JSONDecodeError:
-                logger.error("Failed to parse universal data JSON")
-        
-        # Method 2: Try using regex patterns on page HTML
+        # Method 1: Extract video URL from page content
         video_url = None
+        
+        # Look for video URL in the page HTML - focusing on high quality MP4 sources
         patterns = [
+            # Match unescaped URLs
             r'"playAddr":"([^"]+)"',
+            r'"playAddr_h264":"([^"]+)"',
+            r'"playUrl":"([^"]+)"', 
+            r'"videoUrl":"([^"]+)"',
             r'"downloadAddr":"([^"]+)"',
-            r'"playUrl":"([^"]+)"',
-            r'"contentUrl":"([^"]+)"',
+            # Match with h264/h265 specific URLs
+            r'"h264PlayAddr":"([^"]+)"',
+            r'"h265PlayAddr":"([^"]+)"',
+            # Video element sources
             r'<video[^>]+src="([^"]+)"'
         ]
         
         for pattern in patterns:
             matches = re.findall(pattern, response.text)
             if matches:
-                video_url = matches[0].replace('\\u002F', '/').replace('\\', '')
-                logger.info(f"Found video URL via regex: {video_url[:60]}...")
+                for match in matches:
+                    candidate_url = match.replace('\\u002F', '/').replace('\\', '')
+                    # Filter out audio-only URLs
+                    if 'music' not in candidate_url.lower() and 'audio' not in candidate_url.lower():
+                        video_url = candidate_url
+                        logger.info(f"Found video URL: {video_url[:60]}...")
+                        break
+                if video_url:
+                    break
+        
+        # If we found a video URL, download it
+        if video_url:
+            # Ensure it's a full URL
+            if video_url.startswith('//'):
+                video_url = 'https:' + video_url
                 
-                # Download the video
-                video_headers = get_random_request_headers(referer=url)
+            # Download the video with special headers for video content
+            video_headers = get_random_request_headers(referer=url)
+            video_headers['Accept'] = 'video/mp4,video/*,*/*;q=0.8'
+            
+            try:
                 video_response = requests.get(
                     video_url, 
                     headers=video_headers, 
                     stream=True, 
-                    timeout=30
+                    timeout=30,
+                    verify=False  # Sometimes needed for CDN URLs
                 )
                 
                 if video_response.status_code == 200:
-                    # Create a temporary file
-                    temp_file = os.path.join(TEMP_DIR, f"{video_id}.mp4")
+                    # Check content type
+                    content_type = video_response.headers.get('Content-Type', '')
+                    logger.info(f"Content-Type of response: {content_type}")
                     
-                    # Stream the video to the file
-                    with open(temp_file, 'wb') as f:
-                        for chunk in video_response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                    
-                    if os.path.getsize(temp_file) > 10000:  # Ensure file is not too small
-                        return temp_file
+                    if 'video' in content_type or 'octet-stream' in content_type:
+                        # Stream the video to the file
+                        with open(temp_file, 'wb') as f:
+                            for chunk in video_response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                        
+                        # Validate the video file
+                        if validate_video_file(temp_file):
+                            logger.info(f"Successfully downloaded video to {temp_file}")
+                            return temp_file
+                        else:
+                            logger.warning(f"Downloaded file is not a valid video, removing: {temp_file}")
+                            if os.path.exists(temp_file):
+                                os.remove(temp_file)
                     else:
-                        os.remove(temp_file)
+                        logger.warning(f"Response is not video content: {content_type}")
+                else:
+                    logger.error(f"Failed to download video from URL. Status: {video_response.status_code}")
+            except Exception as e:
+                logger.error(f"Error downloading from URL {video_url}: {e}")
         
-        # If we haven't returned by now, we failed to get the video
+        # Method 2: Try additional extraction strategies
+        # Look for data in JSON structures within the page
+        json_pattern = r'<script id="SIGI_STATE" type="application/json">(.*?)</script>'
+        json_match = re.search(json_pattern, response.text, re.DOTALL)
+        
+        if json_match:
+            try:
+                json_data = json.loads(json_match.group(1))
+                
+                # Navigate through possible JSON paths to find video URL
+                if "ItemModule" in json_data and video_id in json_data["ItemModule"]:
+                    video_data = json_data["ItemModule"][video_id]
+                    if "video" in video_data:
+                        video_url = video_data["video"].get("playAddr") or video_data["video"].get("downloadAddr")
+                        
+                        if video_url:
+                            logger.info(f"Found video URL in JSON data: {video_url[:60]}...")
+                            
+                            # Download using the same approach as above
+                            video_headers = get_random_request_headers(referer=url)
+                            video_headers['Accept'] = 'video/mp4,video/*,*/*;q=0.8'
+                            
+                            try:
+                                video_response = requests.get(
+                                    video_url, 
+                                    headers=video_headers, 
+                                    stream=True, 
+                                    timeout=30,
+                                    verify=False
+                                )
+                                
+                                if video_response.status_code == 200:
+                                    with open(temp_file, 'wb') as f:
+                                        for chunk in video_response.iter_content(chunk_size=8192):
+                                            if chunk:
+                                                f.write(chunk)
+                                    
+                                    if validate_video_file(temp_file):
+                                        return temp_file
+                                    else:
+                                        if os.path.exists(temp_file):
+                                            os.remove(temp_file)
+                            except Exception as e:
+                                logger.error(f"Error downloading from JSON URL: {e}")
+            except json.JSONDecodeError:
+                logger.error("Failed to parse JSON data from page")
+        
+        # Method 3: Use a fallback approach with direct API
+        # This is a more direct approach if the above methods fail
+        try:
+            api_url = f"https://api16-normal-useast5.us.tiktokv.com/aweme/v1/feed/?aweme_id={video_id}"
+            api_headers = get_random_request_headers()
+            api_headers["Accept"] = "application/json"
+            
+            api_response = requests.get(api_url, headers=api_headers, timeout=30)
+            if api_response.status_code == 200:
+                try:
+                    api_data = api_response.json()
+                    
+                    # Extract video URL from API response
+                    if "aweme_list" in api_data and len(api_data["aweme_list"]) > 0:
+                        aweme = api_data["aweme_list"][0]
+                        if "video" in aweme and "play_addr" in aweme["video"]:
+                            video_urls = aweme["video"]["play_addr"].get("url_list", [])
+                            if video_urls:
+                                video_url = video_urls[0]
+                                logger.info(f"Found video URL from API: {video_url[:60]}...")
+                                
+                                # Download using the same approach as above
+                                video_headers = get_random_request_headers()
+                                video_response = requests.get(
+                                    video_url, 
+                                    headers=video_headers, 
+                                    stream=True, 
+                                    timeout=30
+                                )
+                                
+                                if video_response.status_code == 200:
+                                    with open(temp_file, 'wb') as f:
+                                        for chunk in video_response.iter_content(chunk_size=8192):
+                                            if chunk:
+                                                f.write(chunk)
+                                    
+                                    if validate_video_file(temp_file):
+                                        return temp_file
+                                    else:
+                                        if os.path.exists(temp_file):
+                                            os.remove(temp_file)
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse API response JSON")
+        except Exception as e:
+            logger.error(f"Error using API fallback: {e}")
+        
+        # If we reached here, we couldn't download the video
+        logger.error(f"All methods failed to download video with ID: {video_id}")
         return None
+        
     except Exception as e:
         logger.error(f"Error downloading video: {e}")
         return None
@@ -282,7 +397,7 @@ def process_tiktok_url(url):
     
     # Check if we already have the video cached
     video_path = os.path.join(TEMP_DIR, f"{video_id}.mp4")
-    if os.path.exists(video_path) and os.path.getsize(video_path) > 10000:
+    if os.path.exists(video_path) and validate_video_file(video_path):
         logger.info(f"Using cached video file: {video_path}")
         return video_path, video_id
     
@@ -293,7 +408,7 @@ def process_tiktok_url(url):
             logger.info(f"Download already in progress for video ID: {video_id}, waiting...")
             for _ in range(10):  # Wait for max 5 seconds
                 time.sleep(0.5)
-                if os.path.exists(video_path) and os.path.getsize(video_path) > 10000:
+                if os.path.exists(video_path) and validate_video_file(video_path):
                     logger.info(f"Downloaded file is now available: {video_path}")
                     return video_path, video_id
             
@@ -364,7 +479,7 @@ def health_check():
     return jsonify({
         "status": "ok", 
         "message": "TikTok video downloader service is running",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "timestamp": datetime.now().isoformat()
     })
 
@@ -497,7 +612,7 @@ def add_cors_headers(response):
 def get_version():
     """Return API version information."""
     return jsonify({
-        "version": "1.0.0",
+        "version": "1.1.0",
         "api": "TikTok Downloader API",
         "endpoints": [
             {"path": "/api/download", "method": "POST", "description": "Download TikTok video without watermark"},
